@@ -1,0 +1,11 @@
+(executables
+ (names hello)
+ (libraries stdlib)
+ (modes byte))
+
+(rule
+ (targets hello.c.generated)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{bin:c_of_ocaml} %{dep:hello.bc}))))

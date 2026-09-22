@@ -4,4 +4,5 @@ let go ic =
   (Parse_bytecode.from_exe ~linkall:false ~link_info:false ~include_cmis:false ic).code
   |> Opt.f
   |> Compile.f
+  |> ( ^ ) Runtime_c_code.code
 ;;

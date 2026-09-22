@@ -1,7 +1,5 @@
 (library
  (name stdlib)
+ (flags :standard -nostdlib -nopervasives)
  (stdlib
-  (exit_module std_exit))
- (foreign_stubs
-  (language c)
-  (names stubs)))
+  (exit_module std_exit)))

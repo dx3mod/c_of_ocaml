@@ -4,3 +4,11 @@
  (inline_tests)
  (preprocess
   (pps ppx_jane)))
+
+(rule
+ (with-stdout-to
+  runtime_c_code.ml
+  (progn
+   (echo "let code = {plain_c_code|")
+   (cat %{project_root}/runtime/runtime.c)
+   (echo "|plain_c_code}"))))
