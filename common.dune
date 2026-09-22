@@ -1,6 +1,0 @@
-(rule
- (targets main.c.generated)
- (action
-  (with-stdout-to
-   %{targets}
-   (run %{bin:c_of_ocaml} %{dep:main.bc}))))

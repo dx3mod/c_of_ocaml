@@ -1,4 +1,3 @@
-open! Core
 open! Js_of_ocaml_compiler
 
 let go ic =
