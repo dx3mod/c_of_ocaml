@@ -26,7 +26,6 @@ let deadcode p = fst (Deadcode.f p)
 let inline p =
   let p, live = Deadcode.f p in
   Inline.f p live
-;;
 
 let flow_simple p = Flow.f ~skip_param:true p
 let flow = Flow.f
@@ -36,47 +35,28 @@ let eval (p, info) = Eval.f info p
 let specialize' (p, info) =
   Specialize.f ~function_arity:(Specialize.function_arity info) p
   |> Specialize_js.f info
-  |> fun p -> p, info
-;;
+  |> fun p -> (p, info)
 
 let specialize p = fst (specialize' p)
 let ( +> ) f g x = g (f x)
-let round1 = tailcall +> inline +> deadcode +> flow_simple +> specialize' +> eval
+
+let round1 =
+  tailcall +> inline +> deadcode +> flow_simple +> specialize' +> eval
 
 let rec loop max round i p =
   let p' = round p in
   if i >= max || Code.eq p' p then p' else loop max round (i + 1) p'
-;;
 
 let exact_calls ~deadcode_sentinal p =
   let info = Global_flow.f ~fast:false p in
   let p = Global_deadcode.f p ~deadcode_sentinal info in
   Specialize.f ~function_arity:(fun f -> Global_flow.function_arity info f) p
-;;
 
 let o1 =
-  tailcall
-  +> flow_simple
-  +> specialize'
-  +> eval
-  +> inline
-  +> deadcode
-  +> tailcall
-  +> phi
-  +> flow
-  +> specialize'
-  +> eval
-  +> inline
-  +> deadcode
-  +> flow
-  +> specialize'
-  +> eval
-  +> inline
-  +> deadcode
-  +> phi
-  +> flow
+  tailcall +> flow_simple +> specialize' +> eval +> inline +> deadcode
+  +> tailcall +> phi +> flow +> specialize' +> eval +> inline +> deadcode
+  +> flow +> specialize' +> eval +> inline +> deadcode +> phi +> flow
   +> specialize
-;;
 
 let round2 = flow +> specialize' +> eval +> deadcode +> o1
 let o3 = loop 10 round1 1 +> loop 10 round2 1
@@ -84,4 +64,3 @@ let o3 = loop 10 round1 1 +> loop 10 round2 1
 let f =
   let deadcode_sentinal = Code.Var.fresh_n "undef" in
   o3 +> deadcode +> exact_calls ~deadcode_sentinal +> Deadcode.f +> fst
-;;

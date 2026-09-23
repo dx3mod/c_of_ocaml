@@ -1,9 +1,6 @@
 (library
  (name c_of_ocaml)
- (libraries core js_of_ocaml-compiler)
- (inline_tests)
- (preprocess
-  (pps ppx_jane)))
+ (libraries containers containers-data iter js_of_ocaml-compiler))
 
 (rule
  (with-stdout-to
