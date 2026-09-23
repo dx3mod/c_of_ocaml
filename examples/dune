@@ -4,7 +4,7 @@
  (modes byte))
 
 (rule
- (targets hello.c.generated)
+ (targets hello.generated.c)
  (action
   (with-stdout-to
    %{targets}
