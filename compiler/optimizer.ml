@@ -61,6 +61,6 @@ let o1 =
 let round2 = flow +> specialize' +> eval +> deadcode +> o1
 let o3 = loop 10 round1 1 +> loop 10 round2 1
 
-let f =
+let optimizes_program =
   let deadcode_sentinal = Code.Var.fresh_n "undef" in
   o3 +> deadcode +> exact_calls ~deadcode_sentinal +> Deadcode.f +> fst

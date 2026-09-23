@@ -5,9 +5,7 @@ let input_file =
   Arg.(required & pos 0 (some file) None & info [] ~docv:"INPUT_FILE" ~doc)
 
 let run input_file =
-  In_channel.with_open_text input_file @@ fun ic ->
-  let output = C_of_ocaml.Driver.go ic in
-  print_string output
+  In_channel.with_open_text input_file C_of_ocaml.Pipeline.run |> print_string
 
 let cmd =
   let doc = "A transpiler from OCaml to standalone ANSI C file." in

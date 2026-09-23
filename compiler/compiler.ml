@@ -379,7 +379,7 @@ and compile_extern name a b args arg =
           let args_str = List.map arg args |> String.concat ", " in
           Printf.sprintf "%s(%s)" name args_str)
 
-let f program =
+let compile_program program =
   let context =
     Context.
       {
