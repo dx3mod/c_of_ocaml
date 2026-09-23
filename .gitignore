@@ -1,4 +1,8 @@
-_build
-test/demo.cmi
-test/demo.cmo
-test/demo.js
+# Artifacts
+_build/
+*.install
+# Editors
+.merlin
+.vscode/
+# Demos
+demo*

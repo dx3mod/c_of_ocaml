@@ -1,31 +1,30 @@
 (lang dune 3.14)
 
-(name c_of_ocaml)
-
 (using experimental_building_ocaml_compiler_with_dune 0.1)
+
+(name c_of_ocaml)
 
 (generate_opam_files true)
 
 (source
  (github nathanfarlow/c-of-ocaml))
 
-(authors "Nathan Farlow")
+(authors "Nathan Farlow" "Mikhail Lopatin <dx3mod@bk.ru>")
 
-(maintainers "Nathan Farlow")
+(maintainers "Nathan Farlow" "Mikhail Lopatin <dx3mod@bk.ru>")
 
-(license LICENSE)
-
-(documentation "https://github.com/nathanfarlow/c-of-ocaml/")
+(license LGPL-2.1)
 
 (package
  (name c_of_ocaml)
- (synopsis "Compiles an OCaml program to a standalone ANSI C file")
- (description "See https://farlow.dev/2025/05/17/ocaml-on-calculator for more information.")
+ (synopsis "A compiler from OCaml bytecode to standalone ANSI C")
+ (description
+  "A compiler from OCaml bytecode to standalone ANSI C with an embedded freestanding runtime")
  (depends
-  ocaml
+  (ocaml
+   (= 5.2.0))
   dune
   (js_of_ocaml-compiler
-   (>= 5.6.0)))
+   (= 5.8.2)))
  (tags
-  (topics "to describe" your project)))
-
+  (compiler embedded)))
