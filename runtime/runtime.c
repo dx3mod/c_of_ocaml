@@ -1,21 +1,3 @@
-/*
- * OCaml-style runtime ported to AVR ATmega328P.
- *
- * Target: 2 KB SRAM, 32 KB flash.  All sizes below are drastically
- * smaller than the desktop version; tune them for your layout.
- *
- * Layout (default):
- *   heap       1024 B
- *   value stack 256 B
- *   trap stack   4 frames
- *   remaining ~600 B for the C call stack and other statics
- *
- * Known limitations vs. the desktop runtime:
- *   - Integers are 15-bit (-16384..16383).
- *   - Blocks are limited to 127 words (254 B) by the 7-bit size field.
- *   - Function pointers must fit in 16 bits (true for <128 KB AVRs).
- */
-
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -23,14 +5,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* ---------------- Memory configuration ---------------- */
-#define HEAP_SIZE_BYTES 1024u /* was 8*1024*1024 */
-#define STACK_SIZE_BYTES 256u /* was 128*1024   */
-#define TRAP_STACK_SIZE 4     /* was 64         */
+/* Memory configuration */
+#define HEAP_SIZE_BYTES (8 * 1024 * 1024)
+#define STACK_SIZE_BYTES (128 * 1024)
+#define TRAP_STACK_SIZE 64
 
-typedef uint16_t value;
-typedef uint16_t uintnat;
-typedef int16_t intnat;
+typedef uintptr_t value;
+typedef uintptr_t uintnat;
+typedef intptr_t intnat;
 typedef unsigned char uchar;
 
 #define HEAP_SIZE (HEAP_SIZE_BYTES / sizeof(value))
@@ -39,8 +21,7 @@ typedef unsigned char uchar;
 #define Is_int(v) (((v) & 1) != 0)
 #define Is_block(v) (((v) & 1) == 0)
 
-/* Note: 15-bit integers on AVR */
-#define Val_int(x) ((value)(((uintnat)(x) << 1) | (uintnat)1))
+#define Val_int(x) (((value)(x) << 1) | 1)
 #define Int_val(v) ((intnat)(v) >> 1)
 
 #define Val_bool(x) ((x) ? Val_int(1) : Val_int(0))
@@ -52,41 +33,42 @@ typedef unsigned char uchar;
 #define Tag_no_scan 251
 #define Tag_string 252
 
-/* 16-bit header:  tag (8 bits) | mark (1 bit) | size (7 bits, words) */
+/* Block header: tag (8 bits) | mark (1 bit) | size (remaining bits) */
 #define Make_header(sz, tag) ((uintnat)(tag) | ((uintnat)(sz) << 9))
-#define Header_tag(h) ((uintnat)(h) & 0xFFu)
-#define Header_size(h) ((uintnat)(h) >> 9)
-#define Header_marked(h) ((((uintnat)(h)) >> 8) & 1u)
-#define Header_set_mark(h) ((uintnat)(h) | (uintnat)(1u << 8))
-#define Header_clear_mark(h) ((uintnat)(h) & (uintnat) ~(uintnat)(1u << 8))
+#define Header_tag(h) ((h) & 0xFF)
+#define Header_size(h) ((h) >> 9)
+#define Header_marked(h) (((h) >> 8) & 1)
+#define Header_set_mark(h) ((h) | (1 << 8))
+#define Header_clear_mark(h) ((h) & ~(uintnat)(1 << 8))
 
 #define Field(v, i) (((value *)(v))[1 + (i)])
 #define Header(v) (((value *)(v))[0])
 #define Tag_val(v) Header_tag(Header(v))
 #define Size_val(v) Header_size(Header(v))
 
-/* ---------------- Memory ---------------- */
+/* Heap */
 static value heap[HEAP_SIZE];
 static value *hp = heap;
 
+/* Stack */
 static value stack[STACK_SIZE];
 value *bp = stack;
 value *sp = stack;
 
 static void check_stack(intnat n) {
-  if ((uintnat)(sp - stack) + (uintnat)n > (uintnat)STACK_SIZE) {
-    printf("Stack overflow\n");
+  if (sp + n > stack + STACK_SIZE) {
+    printf("Stack overflow (%lu bytes)\n", (unsigned long)STACK_SIZE_BYTES);
     exit(1);
   }
 }
 
 void reserve_stack(intnat n) {
   check_stack(n);
-  memset(sp, 1, (size_t)n * sizeof(value)); /* 1-byte pattern looks like int */
+  memset(sp, 1, n * sizeof(value)); /* 1 looks like int to GC */
   sp += n;
 }
 
-/* ---------------- Exceptions ---------------- */
+/* Exception handling */
 typedef struct {
   jmp_buf buf;
   value *sp;
@@ -116,7 +98,7 @@ static void caml_raise(value exn) {
   longjmp(trap_sp->buf, 1);
 }
 
-/* ---------------- Closures ---------------- */
+/* Closures - declared early for GC */
 typedef struct {
   value (*fun)(value *);
   uintnat args_idx;
@@ -131,7 +113,6 @@ static void mark(value v) {
   uintnat h, size, i;
   uchar tag;
   closure_t *c;
-
   if (Is_int(v))
     return;
   p = (value *)v;
@@ -142,8 +123,7 @@ static void mark(value v) {
     return;
   *p = Header_set_mark(h);
   size = Header_size(h);
-  tag = (uchar)Header_tag(h);
-
+  tag = Header_tag(h);
   if (tag == Tag_closure) {
     c = Closure_data(v);
     for (i = 0; i < c->args_idx; i++)
@@ -157,13 +137,11 @@ static void mark(value v) {
 static value forward(value v) {
   value *p, *src, *dst;
   uintnat h, size;
-
   if (Is_int(v))
     return v;
   p = (value *)v;
   if (p < heap || p >= hp)
     return v;
-
   dst = heap;
   for (src = heap; src < p;) {
     h = *src;
@@ -172,7 +150,7 @@ static value forward(value v) {
       dst += 1 + size;
     src += 1 + size;
   }
-  return (value)(uintnat)dst;
+  return (value)dst;
 }
 
 static void compact(void) {
@@ -181,18 +159,18 @@ static void compact(void) {
   uchar tag;
   closure_t *c;
 
-  /* Phase 1: update roots */
+  /* Phase 1: Update roots */
   for (src = stack; src < sp; src++)
     *src = forward(*src);
   if (exn_value)
     exn_value = forward(exn_value);
 
-  /* Phase 2: update pointers inside live objects */
+  /* Phase 2: Update pointers in live objects */
   for (src = heap; src < hp;) {
     h = *src;
     size = Header_size(h);
     if (Header_marked(h)) {
-      tag = (uchar)Header_tag(h);
+      tag = Header_tag(h);
       if (tag == Tag_closure) {
         c = (closure_t *)&src[1];
         for (i = 0; i < c->args_idx; i++)
@@ -205,7 +183,7 @@ static void compact(void) {
     src += 1 + size;
   }
 
-  /* Phase 3: slide live objects down */
+  /* Phase 3: Slide objects down */
   dst = heap;
   for (src = heap; src < hp;) {
     h = *src;
@@ -213,7 +191,7 @@ static void compact(void) {
     words = 1 + size;
     if (Header_marked(h)) {
       if (dst != src)
-        memmove(dst, src, (size_t)words * sizeof(value));
+        memmove(dst, src, words * sizeof(value));
       *dst = Header_clear_mark(h);
       dst += words;
     }
@@ -234,24 +212,18 @@ static void gc(void) {
 static value *alloc(uintnat size, uchar tag) {
   uintnat words = 1 + size;
   value *block;
-
-  /* 7-bit size field: cannot exceed 127 words */
-  if (size > 127u) {
-    printf("Block too large\n");
-    exit(1);
-  }
-
   if (hp + words > heap + HEAP_SIZE) {
     gc();
     if (hp + words > heap + HEAP_SIZE) {
-      printf("Out of heap memory\n");
+      printf("Out of heap memory (%lu bytes)\n",
+             (unsigned long)HEAP_SIZE_BYTES);
       exit(1);
     }
   }
   block = hp;
   hp += words;
   *block = Make_header(size, tag);
-  memset(block + 1, 1, (size_t)size * sizeof(value));
+  memset(block + 1, 1, size * sizeof(value)); /* 1 looks like int to GC */
   return block;
 }
 
@@ -261,36 +233,36 @@ value caml_alloc(uchar tag, intnat size, ...) {
   value *block;
   intnat i;
 
+  /* Push args to stack as GC roots */
   va_start(args, size);
   check_stack(size);
   for (i = 0; i < size; i++)
-    *(sp++) = (value)va_arg(args, uintnat);
+    *(sp++) = va_arg(args, value);
   va_end(args);
 
-  block = alloc((uintnat)size, tag);
+  block = alloc(size, tag);
 
   for (i = 0; i < size; i++)
     block[1 + i] = saved_sp[i];
   sp = saved_sp;
 
-  return (value)(uintnat)block;
+  return (value)block;
 }
 
 value caml_alloc_closure(value (*fun)(value *), uintnat num_args,
                          uintnat num_env) {
   uintnat data_size =
-      (uintnat)((sizeof(closure_t) + (num_args + num_env) * sizeof(value) +
-                 sizeof(value) - 1) /
-                sizeof(value));
+      (sizeof(closure_t) + (num_args + num_env) * sizeof(value) +
+       sizeof(value) - 1) /
+      sizeof(value);
   value *block;
   closure_t *c;
-
   block = alloc(data_size, Tag_closure);
   c = (closure_t *)&block[1];
   c->fun = fun;
   c->args_idx = 0;
   c->total_args = num_args + num_env;
-  return (value)(uintnat)block;
+  return (value)block;
 }
 
 void add_arg(value closure, value arg) {
@@ -302,6 +274,7 @@ static value caml_call_with_args(value closure, uintnat num_args,
                                  value *args_array) {
   closure_t *c = Closure_data(closure);
   closure_t *new_c;
+  /* Cache before potential GC */
   value (*fun)(value *) = c->fun;
   uintnat closure_args_idx = c->args_idx;
   uintnat total_args = c->total_args;
@@ -310,7 +283,7 @@ static value caml_call_with_args(value closure, uintnat num_args,
   value *args_on_stack, *prev_bp;
   value result;
 
-  check_stack((intnat)total_provided);
+  check_stack(total_provided);
 
   args_on_stack = sp;
   for (i = 0; i < closure_args_idx; i++)
@@ -333,7 +306,7 @@ static value caml_call_with_args(value closure, uintnat num_args,
     result =
         caml_alloc_closure(fun, total_args - total_provided, total_provided);
     new_c = Closure_data(result);
-    memcpy(new_c->args, args_on_stack, (size_t)total_provided * sizeof(value));
+    memcpy(new_c->args, args_on_stack, total_provided * sizeof(value));
     new_c->args_idx = total_provided;
   }
 
@@ -347,10 +320,10 @@ value caml_call(value closure, uintnat num_args, ...) {
   value *args_on_stack = sp;
   value result;
 
-  check_stack((intnat)num_args);
+  check_stack(num_args);
   va_start(args, num_args);
   for (i = 0; i < num_args; i++)
-    *(sp++) = (value)va_arg(args, uintnat);
+    *(sp++) = va_arg(args, value);
   va_end(args);
 
   result = caml_call_with_args(closure, num_args, args_on_stack);
@@ -358,26 +331,26 @@ value caml_call(value closure, uintnat num_args, ...) {
   return result;
 }
 
-/* ---------------- Strings ---------------- */
+/* Strings */
 #define String_length(v) Int_val(Field(v, 0))
 #define String_data(v) ((char *)&Field(v, 1))
 
 static value alloc_string(uintnat len) {
   uintnat data_words = (len + sizeof(value)) / sizeof(value);
   value *block = alloc(1 + data_words, Tag_string);
-  block[1] = Val_int((intnat)len);
-  return (value)(uintnat)block;
+  block[1] = Val_int(len);
+  return (value)block;
 }
 
 value caml_copy_string(const char *s) {
-  uintnat len = (uintnat)strlen(s);
+  uintnat len = strlen(s);
   value v = alloc_string(len);
   memcpy(String_data(v), s, len + 1);
   return v;
 }
 
 value caml_create_bytes(value len) {
-  uintnat n = (uintnat)Int_val(len);
+  uintnat n = Int_val(len);
   value v = alloc_string(n);
   String_data(v)[n] = '\0';
   return v;
@@ -395,7 +368,7 @@ value caml_bytes_unsafe_get(value s, value i) {
 }
 
 value caml_bytes_unsafe_set(value s, value i, value c) {
-  String_data(s)[Int_val(i)] = (char)Int_val(c);
+  String_data(s)[Int_val(i)] = Int_val(c);
   return Val_unit;
 }
 
@@ -403,17 +376,17 @@ value caml_string_of_bytes(value s) { return s; }
 value caml_bytes_of_string(value s) { return s; }
 
 value caml_string_notequal(value s1, value s2) {
-  uintnat len1 = (uintnat)String_length(s1);
-  uintnat len2 = (uintnat)String_length(s2);
+  uintnat len1 = String_length(s1);
+  uintnat len2 = String_length(s2);
   if (len1 != len2)
     return Val_bool(1);
   return Val_bool(memcmp(String_data(s1), String_data(s2), len1) != 0);
 }
 
 value caml_string_concat(value s1, value s2) {
-  uintnat len1 = (uintnat)String_length(s1);
-  uintnat len2 = (uintnat)String_length(s2);
-  value result = caml_create_bytes(Val_int((intnat)(len1 + len2)));
+  uintnat len1 = String_length(s1);
+  uintnat len2 = String_length(s2);
+  value result = caml_create_bytes(Val_int(len1 + len2));
   memcpy(String_data(result), String_data(s1), len1);
   memcpy(String_data(result) + len1, String_data(s2), len2);
   return result;
@@ -422,39 +395,34 @@ value caml_string_concat(value s1, value s2) {
 value caml_blit_bytes(value src, value src_pos, value dst, value dst_pos,
                       value len) {
   memcpy(String_data(dst) + Int_val(dst_pos),
-         String_data(src) + Int_val(src_pos), (size_t)Int_val(len));
+         String_data(src) + Int_val(src_pos), Int_val(len));
   return Val_unit;
 }
 
-/* ---------------- I/O ----------------
- * On AVR, avr-libc's putchar/getchar are not wired to anything by default.
- * Implement them (e.g. via UART) in your application, or call fdevopen().
- */
+/* I/O */
 value caml_putc(value c) {
-  putchar((int)Int_val(c));
+  putchar(Int_val(c));
   return Val_unit;
 }
 
 value caml_getc(value unit) {
   (void)unit;
-  return Val_int((intnat)getchar());
+  return Val_int(getchar());
 }
 
-/* ---------------- Misc ---------------- */
+/* Misc */
 value caml_int_compare(value a, value b) {
   intnat x = Int_val(a), y = Int_val(b);
   return Val_int((x > y) - (x < y));
 }
 
-value caml_exit(value code) { exit((int)Int_val(code)); }
-
+value caml_exit(value code) { exit(Int_val(code)); }
 value caml_register_global(value a, value b, value c) {
   (void)a;
   (void)b;
   (void)c;
   return Val_unit;
 }
-
 value caml_ensure_stack_capacity(value n) {
   (void)n;
   return Val_unit;
