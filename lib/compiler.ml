@@ -174,51 +174,172 @@ let rec compile_closure cir context label_address closure_info =
       Closure_definition
         (Printf.sprintf "c%d" label_address, Cir_program.to_list cir_closure))
 
-and compile_environment_assigns cir context stack_frame label_address arguments
-    =
-  let t i = Printf.sprintf "t%d_i%d" label_address i in
+and compile_environment_assigns =
+  let rename_id = ref 0 in
 
-  let variables_at_block =
-    (Code.Addr.Map.find label_address context.Context.program.blocks).params
-  in
+  fun cir context stack_frame label_address arguments ->
+    let id = !rename_id in
+    incr rename_id;
 
-  List.iteri
-    (fun i arg_variable ->
-      let expression =
-        match Stack_frame.find_variable_slot_opt stack_frame arg_variable with
-        | Some slot -> Cir.Get_stack_frame_variable slot
-        | None -> Cir.Get_variable arg_variable
-      in
+    let t i = Printf.sprintf "t%d_i%d" id i in
 
-      let definition = Cir.Variable_definition (t i, expression) in
+    let variables_at_block =
+      (Code.Addr.Map.find label_address context.Context.program.blocks).params
+    in
 
-      Cir_program.add cir (Variable_declaration (t i));
-      Cir_program.add cir definition)
-    arguments;
+    List.iteri
+      (fun i arg_variable ->
+        let expression =
+          match Stack_frame.find_variable_slot_opt stack_frame arg_variable with
+          | Some slot -> Cir.Get_stack_frame_variable slot
+          | None -> Cir.Get_variable arg_variable
+        in
 
-  (* 2. Присваиваем временные переменные формальным параметрам блока (variables_at_block) *)
-  List.iteri
-    (fun i param_variable ->
-      let expression = Cir.Constanta (Raw_c (t i)) in
+        let definition = Cir.Variable_definition (t i, expression) in
 
-      let instruction =
-        match Stack_frame.find_variable_slot_opt stack_frame param_variable with
-        | Some slot -> Cir.Set_stack_frame_variable (slot, expression)
-        | None -> Cir.Set_variable (param_variable, expression)
-      in
+        Cir_program.add cir (Variable_declaration (t i));
+        Cir_program.add cir definition)
+      arguments;
 
-      Cir_program.add cir instruction)
-    variables_at_block
+    List.iteri
+      (fun i param_variable ->
+        let expression = Cir.Constanta (Raw_c (t i)) in
+
+        let instruction =
+          match
+            Stack_frame.find_variable_slot_opt stack_frame param_variable
+          with
+          | Some slot -> Cir.Set_stack_frame_variable (slot, expression)
+          | None -> Cir.Set_variable (param_variable, expression)
+        in
+
+        Cir_program.add cir instruction)
+      variables_at_block
 
 and compile_block cir context stack_frame already_visited label_address =
   if not @@ Dynarray.exists (( = ) label_address) already_visited then begin
     Dynarray.add_last already_visited label_address;
 
+    Cir_program.add cir (Label label_address);
+
     let block =
       Code.Addr.Map.find label_address context.Context.program.blocks
     in
-    List.iter (compile_instruction cir context stack_frame) block.Code.body
+
+    compile_block_body cir context stack_frame block.Code.body;
+    compile_branch cir context stack_frame already_visited
+      (fst block.Code.branch)
   end
+
+and compile_block_body cir context stack_frame body =
+  let take_closures instructions =
+    List.take_while
+      (function Code.Let (_, Code.Closure _), _ -> true | _ -> false)
+      instructions
+  in
+
+  let rec aux = function
+    | [] -> ()
+    | instructions -> begin
+        let closures_instructions = take_closures instructions in
+        let instructions =
+          List.drop (List.length closures_instructions) instructions
+        in
+
+        begin match (closures_instructions, instructions) with
+        | [], [] -> ()
+        | [], instruction :: instructions ->
+            compile_instruction cir context stack_frame instruction;
+            aux instructions
+        | closures_instructions, _ ->
+            compile_closure_allocation cir context stack_frame
+              closures_instructions;
+            aux instructions
+        end
+      end
+  in
+
+  aux body
+
+and compile_closure_allocation cir context stack_frame closure_instructions =
+  List.iter
+    begin function
+      | Code.Let (variable, Code.Closure (params, (label_address, _))), _ ->
+          let closure_info =
+            Hashtbl.find context.Context.closures label_address
+          in
+
+          let closure =
+            Cir.Closure
+              {
+                name = Printf.sprintf "c%d" label_address;
+                arity = List.length params;
+                free_variables_count = List.length closure_info.free_variables;
+              }
+          in
+
+          let slot = Stack_frame.find_variable_slot stack_frame variable in
+
+          Cir_program.add cir @@ Set_stack_frame_variable (slot, closure)
+      | _ -> ()
+    end
+    closure_instructions;
+
+  List.iter
+    begin function
+      | Code.Let (variable, Code.Closure (_, (label_address, _))), _ ->
+          let closure_info =
+            Hashtbl.find context.Context.closures label_address
+          in
+
+          List.iter
+            (fun free_variable ->
+              let expression =
+                match
+                  Stack_frame.find_variable_slot_opt stack_frame free_variable
+                with
+                | Some slot -> Cir.Get_stack_frame_variable slot
+                | None -> Cir.Get_variable free_variable
+              in
+
+              let slot = Stack_frame.find_variable_slot stack_frame variable in
+              Cir_program.add cir
+              @@ Add_closure_argument (Get_stack_frame_variable slot, expression))
+            closure_info.free_variables
+      | _ -> ()
+    end
+    closure_instructions
+
+and compile_branch cir context stack_frame already_visited branch =
+  match branch with
+  | Code.Return variable ->
+      let expression =
+        match Stack_frame.find_variable_slot_opt stack_frame variable with
+        | Some slot -> Cir.Get_stack_frame_variable slot
+        | None -> Cir.Get_variable variable
+      in
+
+      Cir_program.add cir @@ Cir.Return expression
+  | Code.Raise (variable, _) ->
+      let expression =
+        match Stack_frame.find_variable_slot_opt stack_frame variable with
+        | Some slot -> Cir.Get_stack_frame_variable slot
+        | None -> Cir.Get_variable variable
+      in
+
+      Cir_program.add cir @@ Cir.Raise expression
+  | Code.Stop ->
+      Cir_program.add cir @@ Cir.Return (Constanta (Raw_c " Val_unit"))
+  | Code.Branch (target_label_address, arguments) ->
+      compile_environment_assigns cir context stack_frame target_label_address
+        arguments;
+
+      Cir_program.add cir @@ Cir.Goto target_label_address;
+      compile_block cir context stack_frame already_visited target_label_address
+  | Code.Cond _ -> failwith "cond"
+  | Code.Switch _ -> failwith "switch"
+  | Code.Pushtrap _ -> failwith "pushtrap"
+  | Code.Poptrap _ -> failwith "poptrap"
 
 and compile_instruction cir context stack_frame (instruction, _) =
   match instruction with
@@ -317,4 +438,4 @@ let compile_program program =
       compile_closure cir_program context label_address closure_info)
     context.closures;
 
-  (cir_program, context.string_interner)
+  (context, cir_program, context.string_interner)

@@ -1,6 +1,7 @@
 (executables
  (names hello)
  (libraries stdlib)
+ (flags :standard -warn-error -5-27-32)
  (modes byte))
 
 (rule
@@ -9,3 +10,18 @@
   (with-stdout-to
    %{targets}
    (run %{bin:c_of_ocaml} %{dep:hello.bc}))))
+
+(rule
+ (target hello.generated.exe)
+ (deps hello.generated.c)
+ (action
+  (run
+   %{cc}
+   -ansi
+   -Og
+   -g
+   -Wno-unused-function
+   -Wno-unused-label
+   -o
+   %{target}
+   %{deps})))

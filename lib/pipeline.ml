@@ -4,8 +4,5 @@ let run ic =
       ~include_cmis:false ic
   in
 
-  bytecode.code
-  (* |> Optimizer.optimizes_program  *)
-  |> Compiler.compile_program
+  bytecode.code |> Optimizer.optimizes_program |> Compiler.compile_program
   |> Sourcegen.compile_to_string
-(* |> ( ^ ) (Runtime_c_code.code ^ "\n\n\n") *)
