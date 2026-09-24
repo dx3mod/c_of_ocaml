@@ -1,4 +1,4 @@
 (executable
  (public_name c_of_ocaml)
  (name main)
- (libraries c_of_ocaml cmdliner))
+ (libraries c_of_ocaml_lib cmdliner))
