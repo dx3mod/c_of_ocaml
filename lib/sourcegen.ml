@@ -93,12 +93,14 @@ and gen_constanta ppf constanta =
       gen_args_list ppf gen_constanta constants;
       Format.fprintf ppf ")"
 
-let compile_to_string (context, cir, string_interner) =
-  let ppf = Format.get_std_formatter () in
-
+let compile_into_formatter ppf (context, cir, string_interner) extra_c_files =
   let string_constants = Compiler.String_interner.to_iter string_interner in
 
   Format.pp_print_string ppf Runtime_c_code.code;
+  Format.pp_print_string ppf
+    "\n\n/****************************************************/\n\n\n";
+
+  Format.pp_print_string ppf extra_c_files;
   Format.pp_print_string ppf
     "\n\n/****************************************************/\n\n\n";
 
@@ -127,6 +129,4 @@ let compile_to_string (context, cir, string_interner) =
   Format.fprintf ppf "c%d(NULL); return 0;"
     context.Compiler.Context.program.start;
 
-  Format.fprintf ppf "}";
-
-  Format.flush_str_formatter ()
+  Format.fprintf ppf "}"

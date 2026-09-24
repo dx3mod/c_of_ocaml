@@ -360,7 +360,7 @@ and compile_instruction cir context stack_frame (instruction, _) =
 
 and compile_constanta context constanta =
   match constanta with
-  | Code.Int x -> Cir.Raw_c Printf.(sprintf "Val_int(%ldL)" x)
+  | Code.Int x -> Cir.Int (Int32.to_int x)
   | String s | NativeString (Byte s | Utf (Utf8 s)) ->
       String_interner.insert context.Context.string_interner s;
       Cir.Raw_c (Printf.sprintf "s_%d" @@ String.hash s)
