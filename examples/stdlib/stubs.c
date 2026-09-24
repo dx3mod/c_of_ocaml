@@ -1,1 +1,1 @@
-void fups() {}
+extern void fups() {}

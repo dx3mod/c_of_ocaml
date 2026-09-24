@@ -5,6 +5,8 @@ let input_file =
   Arg.(required & pos 0 (some file) None & info [] ~docv:"INPUT_FILE" ~doc)
 
 let run input_file =
+  Printexc.record_backtrace true;
+
   In_channel.with_open_text input_file C_of_ocaml_lib.Pipeline.run
   |> print_string
 

@@ -11,16 +11,18 @@ type instruction =
   | Variable_definition of string * expression
   | Function_declaration of { name : string; argument_count : int }
   | Closure_definition of string * instruction list
-  | Set_stack_frame_variable of Code_var.t * int * expression
+  | Set_stack_frame_variable of int * expression
+  | Set_variable of Code_var.t * expression
   | Reserve_stack_size of int
 
 and expression =
   | Constanta of constanta
   | Apply of expression * expression list
   | Get_stack_frame_variable of int
+  | Get_variable of Code_var.t
   | Field of Code_var.t * int
-  | Block of { tag : int; fields : Code_var.t list }
-  | Call of { f : Code_var.t; args : Code_var.t list }
+  | Block of { tag : int; fields : expression list }
+  | Call of { f : expression; args : expression list }
   | Call_extern of { function_name : string; arguments : expression list }
   | To_int of expression
 

@@ -67,37 +67,57 @@ module Context = struct
 end
 
 module Stack_frame = struct
-  type t = (Code.Var.t * slot, Vector.rw) Vector.t
+  type t = {
+    variables : (Code.Var.t * slot, Vector.rw) Vector.t;
+    free_slots : int Dynarray.t;
+    mutable current_slot : int;
+  }
+
   and slot = int
 
-  let create : unit -> t = Vector.create
+  let create () =
+    {
+      variables = Vector.create ();
+      free_slots = Dynarray.create ();
+      current_slot = 0;
+    }
 
-  let find_variable_slot_opt frame variable =
+  let find_variable_slot_opt { variables; _ } variable =
     Vector.find_map
       (fun (v, slot) -> if Code.Var.equal v variable then Some slot else None)
-      frame
+      variables
 
   let find_variable_slot frame variable =
     find_variable_slot_opt frame variable
     |> Option.get_exn_or "not found variable at stack frame"
 
-  let get frame variable =
-    match find_variable_slot_opt frame variable with
-    | Some slot -> `Slot slot
-    | None -> `Name "v_varname"
-
-  let get_last_slot frame =
-    Vector.top frame |> Option.map_or ~default:0 (fun (_, slot) -> slot)
-
   let add_variable frame variable =
-    let slot = succ @@ get_last_slot frame in
-    Vector.push frame (variable, slot)
+    if
+      not
+      @@ Vector.exists (fun (v, _) -> Code.Var.equal v variable) frame.variables
+    then
+      let slot =
+        Dynarray.pop_last_opt frame.free_slots
+        |> Option.get_lazy @@ fun () ->
+           let slot = frame.current_slot in
+           frame.current_slot <- succ frame.current_slot;
+           slot
+      in
+
+      Vector.push frame.variables (variable, slot)
 
   let add_variables frame variables = List.iter (add_variable frame) variables
-  let count_variables frame = Vector.length frame
 
-  let variable_not_exist frame variable =
-    not @@ Vector.exists (fun (v, _) -> Code.Var.equal variable v) frame
+  let remove_variable frame variable =
+    Vector.findi (fun (v, _) -> Code.Var.equal v variable) frame.variables
+    |> Option.iter @@ fun (index, (_, slot)) ->
+       Dynarray.add_last frame.free_slots slot;
+       Vector.remove_unordered frame.variables index
+
+  let count_variables { variables; _ } = Vector.length variables
+
+  let variable_not_exist { variables; _ } variable =
+    not @@ Vector.exists (fun (v, _) -> Code.Var.equal variable v) variables
 end
 
 module Cir_program = struct
@@ -115,30 +135,33 @@ let rec compile_closure cir context label_address closure_info =
   Context.find_variables_at_block context label_address
   |> Stack_frame.add_variables stack_frame;
 
+  let closure_variables =
+    closure_info.Closure.free_variables @ closure_info.parameters
+  in
+
   List.iter
     begin fun variable ->
       if Stack_frame.variable_not_exist stack_frame variable then
         Stack_frame.add_variable stack_frame variable
     end
-    (closure_info.Closure.free_variables @ closure_info.parameters);
+    closure_variables;
 
   let required_stack_size = Stack_frame.count_variables stack_frame in
-
   let cir_closure = Cir_program.create () in
   begin
     Cir_program.add cir_closure (Cir.Reserve_stack_size required_stack_size);
 
     List.iteri
-      (fun env_index variable ->
+      begin fun env_index variable ->
         let slot = Stack_frame.find_variable_slot stack_frame variable in
-        let env = Printf.sprintf "env[%d]" env_index in
 
         Cir_program.add cir_closure
-          Cir.(Set_stack_frame_variable (variable, slot, Constanta (Raw_c env))))
-      (closure_info.Closure.free_variables @ closure_info.parameters);
+        @@ Cir.Set_stack_frame_variable
+             (slot, Constanta (Raw_c (Printf.sprintf "env[%d]" env_index)))
+      end
+      closure_variables;
 
-    resolve_temporal_variables_at_block cir_closure context stack_frame
-      label_address
+    compile_environment_assigns cir_closure context stack_frame label_address
       (snd closure_info.continues);
 
     compile_block cir_closure context stack_frame
@@ -151,32 +174,41 @@ let rec compile_closure cir context label_address closure_info =
       Closure_definition
         (Printf.sprintf "c%d" label_address, Cir_program.to_list cir_closure))
 
-and resolve_temporal_variables_at_block cir context stack_frame label_address
-    variables =
-  let temporal_variables =
+and compile_environment_assigns cir context stack_frame label_address arguments
+    =
+  let t i = Printf.sprintf "t%d_i%d" label_address i in
+
+  let variables_at_block =
     (Code.Addr.Map.find label_address context.Context.program.blocks).params
   in
 
   List.iteri
-    (fun _ temporal_variable ->
-      let definition =
-        Cir.Variable_definition
-          ( "tLOX",
-            Cir.Get_stack_frame_variable
-              (Stack_frame.find_variable_slot stack_frame temporal_variable) )
+    (fun i arg_variable ->
+      let expression =
+        match Stack_frame.find_variable_slot_opt stack_frame arg_variable with
+        | Some slot -> Cir.Get_stack_frame_variable slot
+        | None -> Cir.Get_variable arg_variable
       in
-      Cir_program.add cir definition)
-    variables;
 
+      let definition = Cir.Variable_definition (t i, expression) in
+
+      Cir_program.add cir (Variable_declaration (t i));
+      Cir_program.add cir definition)
+    arguments;
+
+  (* 2. Присваиваем временные переменные формальным параметрам блока (variables_at_block) *)
   List.iteri
-    (fun _ temporal_variable ->
-      Cir_program.add cir
-        Cir.(
-          Set_stack_frame_variable
-            ( temporal_variable,
-              Stack_frame.find_variable_slot stack_frame temporal_variable,
-              Constanta (Raw_c "tLOX2") )))
-    temporal_variables
+    (fun i param_variable ->
+      let expression = Cir.Constanta (Raw_c (t i)) in
+
+      let instruction =
+        match Stack_frame.find_variable_slot_opt stack_frame param_variable with
+        | Some slot -> Cir.Set_stack_frame_variable (slot, expression)
+        | None -> Cir.Set_variable (param_variable, expression)
+      in
+
+      Cir_program.add cir instruction)
+    variables_at_block
 
 and compile_block cir context stack_frame already_visited label_address =
   if not @@ Dynarray.exists (( = ) label_address) already_visited then begin
@@ -191,12 +223,15 @@ and compile_block cir context stack_frame already_visited label_address =
 and compile_instruction cir context stack_frame (instruction, _) =
   match instruction with
   | Code.Let (variable, expression) ->
-      Cir_program.add cir
-        Cir.(
-          Set_stack_frame_variable
-            ( variable,
-              Stack_frame.find_variable_slot stack_frame variable,
-              compile_expression context stack_frame expression ))
+      let expression = compile_expression context stack_frame expression in
+
+      let instruction =
+        match Stack_frame.find_variable_slot_opt stack_frame variable with
+        | Some slot -> Cir.Set_stack_frame_variable (slot, expression)
+        | None -> Cir.Set_variable (variable, expression)
+      in
+
+      Cir_program.add cir instruction
   | Code.Assign _ -> failwith ""
   | Code.Set_field _ -> failwith ""
   | Code.Offset_ref _ -> failwith ""
@@ -224,9 +259,32 @@ and compile_expression context stack_frame expression =
   | Code.Constant constanta -> Constanta (compile_constanta context constanta)
   | Code.Field (variable, index) -> Cir.Field (variable, index)
   | Code.Block (tag, fields, _, _) ->
-      Cir.Block { tag; fields = Array.to_list fields }
+      let fields =
+        Array.to_list fields
+        |> List.map @@ fun variable ->
+           match Stack_frame.find_variable_slot_opt stack_frame variable with
+           | Some slot -> Cir.Get_stack_frame_variable slot
+           | None -> Cir.Get_variable variable
+      in
+      Cir.Block { tag; fields }
   | Code.Closure _ -> assert false
-  | Code.Apply { f; args; _ } -> Cir.Call { f; args }
+  | Code.Apply { f; args; _ } ->
+      let f =
+        match Stack_frame.find_variable_slot_opt stack_frame f with
+        | Some slot -> Cir.Get_stack_frame_variable slot
+        | None -> Cir.Get_variable f
+      in
+
+      let args =
+        List.map
+          (fun arg ->
+            match Stack_frame.find_variable_slot_opt stack_frame arg with
+            | Some slot -> Cir.Get_stack_frame_variable slot
+            | None -> Cir.Get_variable arg)
+          args
+      in
+
+      Cir.Call { f; args }
   | Special Undefined -> Constanta (Cir.Raw_c "Val_unit")
   | Special (Alias_prim _) -> Constanta (Cir.Raw_c "Val_unit")
   | Prim (prim, args) -> compile_prim context stack_frame prim args
@@ -234,15 +292,17 @@ and compile_expression context stack_frame expression =
 and compile_prim context stack_frame prim args =
   let compile_arg = function
     | Code.Pv variable ->
-        Cir.Get_stack_frame_variable
-          (Stack_frame.find_variable_slot stack_frame variable)
+        begin match Stack_frame.find_variable_slot_opt stack_frame variable with
+        | Some slot -> Cir.Get_stack_frame_variable slot
+        | None -> Cir.Get_variable variable
+        end
     | Pc c -> Cir.Constanta (compile_constanta context c)
   in
 
   match (prim, args) with
   | Code.Vectlength, [ x ] -> Cir.To_int (compile_arg x)
-  | Extern "%undefined", _ -> Cir.Constanta (Raw_c "Val_unit")
-  | Extern name, _ ->
+  | Code.Extern "%undefined", _ -> Cir.Constanta (Raw_c "Val_unit")
+  | Code.Extern name, _ ->
       Cir.Call_extern
         { function_name = name; arguments = List.map compile_arg args }
   | _ -> Cir.Constanta (Raw_c "LOX")
