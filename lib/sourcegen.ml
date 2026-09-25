@@ -207,7 +207,6 @@ and gen_constanta ppf constanta =
 let compile_into_formatter ppf (context, cir, string_interner) extra_c_files =
   let string_constants = Compiler.String_interner.to_iter string_interner in
 
-  Format.pp_print_string ppf Runtime_c_code.code;
   Format.pp_print_string ppf
     "\n\n/****************************************************/\n\n\n";
 

@@ -26,19 +26,26 @@ let extra_c_files =
   in
   Arg.(value & opt_all file [] & info [ "c" ] ~docv:"C_FILE" ~doc)
 
-let run input_file disable_optimization dump_cir output_file extra_c_files =
+let runtime_variant =
+  let doc = "default / avr" in
+  Arg.(
+    value & opt string "default"
+    & info [ "runtime" ] ~docv:"RUNTIME_VARIANT" ~doc)
+
+let run input_file runtime_variant disable_optimization dump_cir output_file
+    extra_c_files =
   Printexc.record_backtrace true;
 
   In_channel.with_open_text input_file @@ fun ic ->
-  C_of_ocaml_lib.Pipeline.run ~disable_optimization ~dump_cir ?output_file
-    ~extra_c_files ic
+  C_of_ocaml_lib.Pipeline.run ~runtime_variant ~disable_optimization ~dump_cir
+    ?output_file ~extra_c_files ic
 
 let cmd =
   let doc = "A transpiler from OCaml to standalone ANSI C file." in
   let info = Cmd.info "c_of_ocaml" ~doc in
   Cmd.v info
     Term.(
-      const run $ input_file $ disable_optimization $ dump_cir $ output_file
-      $ extra_c_files)
+      const run $ input_file $ runtime_variant $ disable_optimization $ dump_cir
+      $ output_file $ extra_c_files)
 
 let () = exit (Cmd.eval cmd)

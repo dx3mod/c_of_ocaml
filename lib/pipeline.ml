@@ -10,7 +10,8 @@ let read_bytecode_from_channel ic =
   Js_of_ocaml_compiler.Parse_bytecode.from_exe ~linkall:false ~link_info:false
     ~include_cmis:false ic
 
-let run ~disable_optimization ~dump_cir ?output_file ~extra_c_files ic =
+let run ~runtime_variant ~disable_optimization ~dump_cir ?output_file
+    ~extra_c_files ic =
   initialize_configuration ();
 
   let program = (read_bytecode_from_channel ic).code in
@@ -36,4 +37,11 @@ let run ~disable_optimization ~dump_cir ?output_file ~extra_c_files ic =
       |> String.concat "\n\n"
     in
 
+    let runtime_c_code =
+      match runtime_variant with
+      | "avr" -> Runtime_c_code.avr
+      | _ -> Runtime_c_code.default
+    in
+
+    Format.pp_print_string formatter runtime_c_code;
     Sourcegen.compile_into_formatter formatter compiled_program extra_c_files

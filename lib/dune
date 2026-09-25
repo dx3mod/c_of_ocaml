@@ -8,6 +8,9 @@
  (with-stdout-to
   runtime_c_code.ml
   (progn
-   (echo "let code = {plain_c_code|")
+   (echo "let default = {plain_c_code|")
    (cat %{project_root}/runtime/runtime.c)
+   (echo "|plain_c_code}\n\n")
+   (echo "let avr = {plain_c_code|")
+   (cat %{project_root}/runtime/runtime.atmega328p.c)
    (echo "|plain_c_code}"))))
