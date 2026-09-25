@@ -1,29 +1,36 @@
 open Containers
 module Code = Js_of_ocaml_compiler.Code
 
+(** Metadata extracted for code closures during static analysis. *)
 module Closure = struct
   type info = {
     free_variables : Code.Var.t list;
-    continues : Code.cont;
-    parameters : Code.Var.t list;
+        (** Free variables captured by the closure. *)
+    continues : Code.cont;  (** Target continuation information. *)
+    parameters : Code.Var.t list;  (** Parameters accepted by the closure. *)
   }
 end
 
 module String_interner = CCHashSet.Make (String)
+(** Hash set used for interning string constants. *)
 
+(** Compilation context. *)
 module Context = struct
   type t = {
     program : Code.program;
     closures : closures;
     string_interner : String_interner.t;
   }
+  (** Global compilation context state. *)
 
   and closures = (Code.Addr.t, Closure.info) Hashtbl.t
+  (** Mapping from block entry address to closure metadata. *)
 
-  let find_closures program : closures =
+  (** Extracts closure definitions from the IR program. *)
+  let extract_closures program : closures =
     let free_vars = Js_of_ocaml_compiler.Freevars.f program in
 
-    let find_closure parameters ((label_address, _) as continues) =
+    let extract_closure parameters ((label_address, _) as continues) =
       let free_variables =
         Code.Addr.Map.find_opt label_address free_vars
         |> Option.map_or ~default:[] Code.Var.Set.elements
@@ -34,16 +41,19 @@ module Context = struct
 
     Code.fold_closures program
       (fun _ parameters continues acc ->
-        find_closure parameters continues :: acc)
+        extract_closure parameters continues :: acc)
       []
     |> Hashtbl.of_list
 
+  (** Initializes a new compilation context for the given [program]. *)
   let make program =
-    let closures = find_closures program in
+    let closures = extract_closures program in
     let string_interner = String_interner.create 100 in
     { program; closures; string_interner }
 
-  let find_variables_at_block context label_address =
+  (** Collects all variables defined or used within the block hierarchy starting
+      at [label_address]. *)
+  let extract_variables_at_block context label_address =
     let variables = Dynarray.create () in
 
     let fold = Code.fold_children in
@@ -66,60 +76,52 @@ module Context = struct
     Dynarray.to_list variables
 end
 
+(** Manages stack frame slot allocations for local variables. *)
 module Stack_frame = struct
   type t = {
     variables : (Code.Var.t * slot, Vector.rw) Vector.t;
-    free_slots : int Dynarray.t;
     mutable current_slot : int;
   }
 
   and slot = int
+  (** Identifier for a stack slot index. *)
 
-  let create () =
-    {
-      variables = Vector.create ();
-      free_slots = Dynarray.create ();
-      current_slot = 0;
-    }
+  (** Creates an empty stack frame. *)
+  let create () = { variables = Vector.create (); current_slot = 0 }
 
+  (** Returns the stack slot allocated for [variable], or [None] if not present.
+  *)
   let find_variable_slot_opt { variables; _ } variable =
     Vector.find_map
       (fun (v, slot) -> if Code.Var.equal v variable then Some slot else None)
       variables
 
+  (** Returns the stack slot allocated for [variable], raising an exception if
+      not found. *)
   let find_variable_slot frame variable =
     find_variable_slot_opt frame variable
     |> Option.get_exn_or "not found variable at stack frame"
 
-  let add_variable frame variable =
-    if
-      not
-      @@ Vector.exists (fun (v, _) -> Code.Var.equal v variable) frame.variables
-    then
-      let slot =
-        Dynarray.pop_last_opt frame.free_slots
-        |> Option.get_lazy @@ fun () ->
-           let slot = frame.current_slot in
-           frame.current_slot <- succ frame.current_slot;
-           slot
-      in
+  (** Allocates a new stack slot for [variable] in [frame]. *)
+  let push frame variable =
+    let slot = frame.current_slot in
+    frame.current_slot <- succ frame.current_slot;
 
-      Vector.push frame.variables (variable, slot)
+    Vector.push frame.variables (variable, slot)
 
-  let add_variables frame variables = List.iter (add_variable frame) variables
+  (** Allocates slots for a list of [variables] in [frame]. *)
+  let pushes frame variables = List.iter (push frame) variables
 
-  let remove_variable frame variable =
-    Vector.findi (fun (v, _) -> Code.Var.equal v variable) frame.variables
-    |> Option.iter @@ fun (index, (_, slot)) ->
-       Dynarray.add_last frame.free_slots slot;
-       Vector.remove_unordered frame.variables index
+  (** Returns the total number of variable slots in [frame]. *)
+  let size { variables; _ } = Vector.length variables
 
-  let count_variables { variables; _ } = Vector.length variables
-
-  let variable_not_exist { variables; _ } variable =
+  (** Returns [true] if [variable] is not allocated in [frame]. *)
+  let not_in { variables; _ } variable =
     not @@ Vector.exists (fun (v, _) -> Code.Var.equal variable v) variables
 end
 
+(** Builder buffer for generating CIR (C Intermediate Representation)
+    instructions. *)
 module Cir_program = struct
   type t = Cir.instruction Dynarray.t
 
@@ -129,6 +131,7 @@ module Cir_program = struct
   let pp ppf instars = Dynarray.iter (Cir.pp_instruction ppf) instars
 end
 
+(** Mapping from primitive integer operation names to C operators. *)
 let integer_binary_operations =
   [
     ("%int_add", "+");
@@ -146,11 +149,12 @@ let integer_binary_operations =
     ("%int_asr", ">>");
   ]
 
+(** Compiles a closure into a standalone CIR function definition. *)
 let rec compile_closure cir context label_address closure_info =
   let stack_frame = Stack_frame.create () in
 
-  Context.find_variables_at_block context label_address
-  |> Stack_frame.add_variables stack_frame;
+  Context.extract_variables_at_block context label_address
+  |> Stack_frame.pushes stack_frame;
 
   let closure_variables =
     closure_info.Closure.free_variables @ closure_info.parameters
@@ -158,12 +162,12 @@ let rec compile_closure cir context label_address closure_info =
 
   List.iter
     begin fun variable ->
-      if Stack_frame.variable_not_exist stack_frame variable then
-        Stack_frame.add_variable stack_frame variable
+      if Stack_frame.not_in stack_frame variable then
+        Stack_frame.push stack_frame variable
     end
     closure_variables;
 
-  let required_stack_size = Stack_frame.count_variables stack_frame in
+  let required_stack_size = Stack_frame.size stack_frame in
   let cir_closure = Cir_program.create () in
   begin
     Cir_program.add cir_closure (Cir.Reserve_stack_size required_stack_size);
@@ -178,7 +182,8 @@ let rec compile_closure cir context label_address closure_info =
       end
       closure_variables;
 
-    compile_environment_assigns cir_closure context stack_frame label_address
+    emits_assignments_of_passing_arguments cir_closure context stack_frame
+      label_address
       (snd closure_info.continues);
 
     compile_block cir_closure context stack_frame
@@ -191,12 +196,14 @@ let rec compile_closure cir context label_address closure_info =
       Closure_definition
         (Printf.sprintf "c%d" label_address, Cir_program.to_list cir_closure))
 
-and compile_environment_assigns =
-  let rename_id = ref 0 in
+(** Emits assignments passing arguments to block parameters via temporary
+    variables. *)
+and emits_assignments_of_passing_arguments =
+  let uniq_id = ref 0 in
 
   fun cir context stack_frame label_address arguments ->
-    let id = !rename_id in
-    incr rename_id;
+    let id = !uniq_id in
+    incr uniq_id;
 
     let t i = Printf.sprintf "t%d_i%d" id i in
 
@@ -233,6 +240,8 @@ and compile_environment_assigns =
         Cir_program.add cir instruction)
       variables_at_block
 
+(** Compiles a basic block at [label_address], guarding against cyclic
+    traversals. *)
 and compile_block cir context stack_frame already_visited label_address =
   if not @@ Dynarray.exists (( = ) label_address) already_visited then begin
     Dynarray.add_last already_visited label_address;
@@ -248,6 +257,7 @@ and compile_block cir context stack_frame already_visited label_address =
       (fst block.Code.branch)
   end
 
+(** Compiles the sequence of instructions in a basic block body. *)
 and compile_block_body cir context stack_frame body =
   let take_closures instructions =
     List.take_while
@@ -278,6 +288,7 @@ and compile_block_body cir context stack_frame body =
 
   aux body
 
+(** Emits CIR code to instantiate closures and capture their free variables. *)
 and compile_closure_allocation cir context stack_frame closure_instructions =
   List.iter
     begin function
@@ -327,6 +338,7 @@ and compile_closure_allocation cir context stack_frame closure_instructions =
     end
     closure_instructions
 
+(** Compiles block control-flow operations (return, jump, branch, raise). *)
 and compile_branch cir context stack_frame already_visited branch =
   match branch with
   | Code.Return variable ->
@@ -348,8 +360,8 @@ and compile_branch cir context stack_frame already_visited branch =
   | Code.Stop ->
       Cir_program.add cir @@ Cir.Return (Constanta (Raw_c " Val_unit"))
   | Code.Branch (target_label_address, arguments) ->
-      compile_environment_assigns cir context stack_frame target_label_address
-        arguments;
+      emits_assignments_of_passing_arguments cir context stack_frame
+        target_label_address arguments;
 
       Cir_program.add cir @@ Cir.Goto target_label_address;
       compile_block cir context stack_frame already_visited target_label_address
@@ -364,12 +376,12 @@ and compile_branch cir context stack_frame already_visited branch =
       in
 
       let cir_then_arguments = Cir_program.create () in
-      compile_environment_assigns cir_then_arguments context stack_frame
-        then_label_address then_branch_arguments;
+      emits_assignments_of_passing_arguments cir_then_arguments context
+        stack_frame then_label_address then_branch_arguments;
 
       let cir_else_arguments = Cir_program.create () in
-      compile_environment_assigns cir_else_arguments context stack_frame
-        else_label_address else_branch_arguments;
+      emits_assignments_of_passing_arguments cir_else_arguments context
+        stack_frame else_label_address else_branch_arguments;
 
       Cir_program.add cir
       @@ Condition
@@ -385,6 +397,7 @@ and compile_branch cir context stack_frame already_visited branch =
   | Code.Pushtrap _ -> failwith "pushtrap"
   | Code.Poptrap _ -> failwith "poptrap"
 
+(** Compiles a single IR instruction into CIR. *)
 and compile_instruction cir context stack_frame (instruction, _) =
   match instruction with
   | Code.Let (variable, expression) ->
@@ -402,7 +415,8 @@ and compile_instruction cir context stack_frame (instruction, _) =
   | Code.Offset_ref _ -> failwith ""
   | Code.Array_set _ -> failwith ""
 
-and compile_constanta context constanta =
+(** Translates a literal constant into its CIR equivalent. *)
+and compile_constant context constanta =
   match constanta with
   | Code.Int x -> Cir.Int (Int32.to_int x)
   | String s | NativeString (Byte s | Utf (Utf8 s)) ->
@@ -415,13 +429,14 @@ and compile_constanta context constanta =
         {
           tag;
           constants =
-            Array.to_list constants |> List.map (compile_constanta context);
+            Array.to_list constants |> List.map (compile_constant context);
         }
   | Float_array _ -> Cir.Raw_c "UNSUPPORTED_FLOAT_ARRAY"
 
+(** Translates an IR expression into CIR. *)
 and compile_expression context stack_frame expression =
   match expression with
-  | Code.Constant constanta -> Constanta (compile_constanta context constanta)
+  | Code.Constant constanta -> Constanta (compile_constant context constanta)
   | Code.Field (variable, index) -> Cir.Field (variable, index)
   | Code.Block (tag, fields, _, _) ->
       let fields =
@@ -452,23 +467,24 @@ and compile_expression context stack_frame expression =
       Cir.Call { f; args }
   | Special Undefined -> Constanta (Cir.Raw_c "Val_unit")
   | Special (Alias_prim _) -> Constanta (Cir.Raw_c "Val_unit")
-  | Prim (prim, args) -> compile_prim context stack_frame prim args
+  | Prim (prim, args) -> compile_primitive context stack_frame prim args
 
-and compile_prim context stack_frame prim args =
-  let compile_arg = function
+(** Compiles a primitive to CIR. *)
+and compile_primitive context stack_frame prim args =
+  let compile_argument = function
     | Code.Pv variable ->
         begin match Stack_frame.find_variable_slot_opt stack_frame variable with
         | Some slot -> Cir.Get_stack_frame_variable slot
         | None -> Cir.Get_variable variable
         end
-    | Pc c -> Cir.Constanta (compile_constanta context c)
+    | Pc constant -> Cir.Constanta (compile_constant context constant)
   in
 
   match (prim, args) with
-  | Code.Vectlength, [ x ] -> Cir.Type_val (`Int, compile_arg x)
+  | Code.Vectlength, [ x ] -> Cir.Type_val (`Int, compile_argument x)
   | Array_get, [ array_variable; index ] ->
-      let array_variable = compile_arg array_variable in
-      let array_index = compile_arg index in
+      let array_variable = compile_argument array_variable in
+      let array_index = compile_argument index in
 
       Cir.Field' (array_variable, array_index)
   | Code.Extern "%undefined", _ -> Cir.Constanta (Raw_c "Val_unit")
@@ -476,37 +492,44 @@ and compile_prim context stack_frame prim args =
     when String.starts_with ~prefix:"%" name
          && List.mem_assoc name integer_binary_operations ->
       compile_integer_binary_operations name
-        (compile_arg first_operand)
-        (compile_arg second_operand)
+        (compile_argument first_operand)
+        (compile_argument second_operand)
   | Code.Extern name, args when String.starts_with ~prefix:"%" name ->
       failwith
       @@ Format.sprintf "EXTERN %s with args %d" name (List.length args)
   | Code.Extern name, _ ->
       Cir.Call_extern
-        { function_name = name; arguments = List.map compile_arg args }
-  | Not, [ arg ] -> Cir.Val_type (`Bool, Not (Type_val (`Bool, compile_arg arg)))
-  | IsInt, [ arg ] -> Cir.Val_type (`Bool, Is_int (compile_arg arg))
+        { function_name = name; arguments = List.map compile_argument args }
+  | Not, [ arg ] ->
+      Cir.Val_type (`Bool, Not (Type_val (`Bool, compile_argument arg)))
+  | IsInt, [ arg ] -> Cir.Val_type (`Bool, Is_int (compile_argument arg))
   | Eq, [ first_operand; second_operand ] ->
       Cir.Val_type
         ( `Bool,
           Equal
-            ( Type_val (`Int, compile_arg first_operand),
-              Type_val (`Int, compile_arg second_operand) ) )
+            ( Type_val (`Int, compile_argument first_operand),
+              Type_val (`Int, compile_argument second_operand) ) )
   | Neq, [ first_operand; second_operand ] ->
       Cir.Val_type
         ( `Bool,
-          Not (Equal (compile_arg first_operand, compile_arg second_operand)) )
+          Not
+            (Equal
+               (compile_argument first_operand, compile_argument second_operand))
+        )
   | Lt, [ first_operand; second_operand ] ->
       Cir.Val_type
         ( `Bool,
-          Less_than (compile_arg first_operand, compile_arg second_operand) )
+          Less_than
+            (compile_argument first_operand, compile_argument second_operand) )
   | Le, [ first_operand; second_operand ] ->
       Cir.Val_type
         ( `Bool,
           Less_than_or_equal
-            (compile_arg first_operand, compile_arg second_operand) )
+            (compile_argument first_operand, compile_argument second_operand) )
   | _ -> failwith "unhandled"
 
+(** Translates binary integer arithmetic and bitwise primitives to CIR binary
+    operations. *)
 and compile_integer_binary_operations operation first_operand second_operand =
   let integer_operation =
     List.assoc ~eq:String.equal operation integer_binary_operations
@@ -517,6 +540,8 @@ and compile_integer_binary_operations operation first_operand second_operand =
 
   Cir.Val_type (`Int, Binary_operation (integer_operation, first, second))
 
+(** Compiles an entire [Code.program] into a compilation context, CIR program,
+    and string interner. *)
 let compile_program program =
   let context = Context.make program in
 
