@@ -1,4 +1,11 @@
-# c_of_ocaml
+```
+a'!   _,,_ a'!   _,,_     a'!   _,,_____
+  \\_/ c  \  \\_/ of \      \\_/  ocaml \.-,
+   \, /-( /'-,\, /-( /'-,    \, /-----( /
+   //\ //\\   //\ //\\       //\     //\\
+```
+
+# C_of_ocaml
 
 A compiler from OCaml bytecode to standalone ANSI C with an embedded freestanding runtime.
 
