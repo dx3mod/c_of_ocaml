@@ -22,90 +22,92 @@ let gen_args_list ppf pp list =
 
 let rec gen_instruction ppf instruction =
   match instruction with
-  | Cir.Variable_declaration name -> Format.fprintf ppf "value %s;" name
-  | Cir.Variable_definition (name, expression) ->
+  | Cir.Variable_declaration { name } -> Format.fprintf ppf "value %s;" name
+  | Cir.Variable_definition { name; value } ->
       Format.fprintf ppf "%s = " name;
-      gen_expression ppf expression;
+      gen_expression ppf value;
       Format.fprintf ppf ";"
-  | Cir.Closure_definition (name, body) ->
+  | Cir.Closure_definition { name; branch } ->
       Format.fprintf ppf "value %s(value* env) {" name;
-      List.iter (gen_instruction ppf) body;
+      List.iter (gen_instruction ppf) branch;
       Format.fprintf ppf "}"
-  | Cir.Set_stack_frame_variable (slot, expression) ->
+  | Cir.Set_stack_frame_variable { slot; value } ->
       Format.fprintf ppf "bp[%d] = " slot;
-      gen_expression ppf expression;
+      gen_expression ppf value;
       Format.fprintf ppf ";"
   | Cir.Reserve_stack_size size -> Format.fprintf ppf "reserve_stack(%d);" size
-  | Cir.Set_variable (variable, expression) ->
-      Format.fprintf ppf "%s = " (var_name variable);
-      gen_expression ppf expression;
+  | Cir.Set_variable { var; value } ->
+      Format.fprintf ppf "%s = " (var_name var);
+      gen_expression ppf value;
       Format.fprintf ppf ";"
-  | Function_declaration (name, count) ->
+  | Cir.Function_declaration { name; argc } ->
       Format.fprintf ppf "value %s(%s);" name
-      @@ (List.init count Fun.(const "value") |> String.concat ", ")
-  | Label label_address -> Format.fprintf ppf "b%d: ;" label_address
-  | Add_closure_argument (closure_expression, expression) ->
+      @@ (List.init argc Fun.(const "value") |> String.concat ", ")
+  | Cir.Label label_address -> Format.fprintf ppf "b%d: ;" label_address
+  | Cir.Add_closure_argument { var; arg } ->
       Format.fprintf ppf "add_arg(";
-      gen_expression ppf closure_expression;
+      gen_expression ppf var;
       Format.fprintf ppf ", ";
-      gen_expression ppf expression;
+      gen_expression ppf arg;
       Format.fprintf ppf ");"
-  | Goto label_address -> Format.fprintf ppf "goto b%d;" label_address
-  | Return expression ->
+  | Cir.Goto label_address -> Format.fprintf ppf "goto b%d;" label_address
+  | Cir.Return expression ->
       Format.fprintf ppf "return ";
       gen_expression ppf expression;
       Format.fprintf ppf ";"
-  | Raise expression ->
+  | Cir.Raise expression ->
       Format.fprintf ppf "caml_raise(";
       gen_expression ppf expression;
       Format.fprintf ppf ");"
-  | Condition (cond, then_branch, else_branch) ->
+  | Cir.Condition { condition; then_branch; else_branch } ->
       Format.fprintf ppf "if (";
-      gen_expression ppf cond;
+      gen_expression ppf condition;
       Format.fprintf ppf ") {";
       List.iter (gen_instruction ppf) then_branch;
       Format.fprintf ppf "} else {";
       List.iter (gen_instruction ppf) else_branch;
       Format.fprintf ppf "}"
-  | Set_field (array_expression, index_expression, expression) ->
+  | Cir.Set_field { var; index; value } ->
       Format.fprintf ppf "Field(";
-      gen_expression ppf array_expression;
+      gen_expression ppf var;
       Format.fprintf ppf ", ";
-      gen_expression ppf index_expression;
+      gen_expression ppf index;
       Format.fprintf ppf ") = ";
-      gen_expression ppf expression;
+      gen_expression ppf value;
       Format.fprintf ppf ";"
-  | Switch (expression, cases) ->
+  | Cir.Switch { condition; case_branches } ->
       Format.fprintf ppf " switch (";
-      gen_expression ppf expression;
+      gen_expression ppf condition;
       Format.fprintf ppf ") {";
       List.iter
         (fun (i, case) ->
           Format.fprintf ppf "case %d: {" i;
           List.iter (gen_instruction ppf) case;
           Format.fprintf ppf "}")
-        cases;
+        case_branches;
       Format.fprintf ppf "} "
-  | Push_trap { body; handler } ->
+  | Cir.Push_trap { branch; handler_branch } ->
       Format.fprintf ppf
         {| check_trap_stack(); trap_sp->sp = sp; trap_sp->bp = bp; if (setjmp(trap_sp->buf) == 0) { trap_sp++;  |};
-      List.iter (gen_instruction ppf) body;
+      List.iter (gen_instruction ppf) branch;
       Format.fprintf ppf {| } else { |};
-      List.iter (gen_instruction ppf) handler;
+      List.iter (gen_instruction ppf) handler_branch;
       Format.fprintf ppf {| } |}
-  | Pop_trap -> Format.fprintf ppf "trap_sp--;"
+  | Cir.Pop_trap -> Format.fprintf ppf "trap_sp--;"
 
 and gen_expression ppf expression =
   match expression with
   | Cir.Constanta constanta -> gen_constanta ppf constanta
-  | Cir.Get_stack_frame_variable slot -> Format.fprintf ppf "bp[%d]" slot
-  | Cir.Field (variable, index) ->
-      Format.fprintf ppf "Field(v_%s, %d)" (var_name variable) index
-  | Cir.Field' (variable, index) ->
+  | Cir.Get_stack_frame_variable { slot } -> Format.fprintf ppf "bp[%d]" slot
+  | Cir.Field_var { var; slot } ->
       Format.fprintf ppf "Field(";
-      gen_expression ppf variable;
+      gen_expression ppf var;
+      Format.fprintf ppf ", %d)" slot
+  | Cir.Field_expr { var; slot } ->
+      Format.fprintf ppf "Field(";
+      gen_expression ppf var;
       Format.fprintf ppf ", ";
-      gen_expression ppf index;
+      gen_expression ppf slot;
       Format.fprintf ppf ")"
   | Cir.Block { tag; fields } ->
       Format.fprintf ppf "caml_alloc(%d, %d, " tag (List.length fields);
@@ -113,26 +115,24 @@ and gen_expression ppf expression =
       | [] -> Format.fprintf ppf "NULL"
       | _ -> gen_args_list ppf gen_expression fields);
       Format.fprintf ppf ")"
-  | Cir.Call { f; args } ->
+  | Cir.Call { fn; args } ->
       Format.fprintf ppf "caml_call(";
-      gen_expression ppf f;
+      gen_expression ppf fn;
       Format.fprintf ppf ", %d" (List.length args);
       if not (List.is_empty args) then begin
         Format.fprintf ppf ", ";
         gen_args_list ppf gen_expression args
       end;
       Format.fprintf ppf ")"
-  | Cir.Call_extern (`Name name, arguments) ->
+  | Cir.Call_extern { name; args } ->
       Format.fprintf ppf "%s(" name;
-      gen_args_list ppf gen_expression arguments;
+      gen_args_list ppf gen_expression args;
       Format.fprintf ppf ")"
-  | Cir.Call_extern (_, _) -> failwith "unsupported call_extern"
   | Cir.Val_type (conversion_type, expression) ->
       begin match conversion_type with
       | `Int -> Format.pp_print_string ppf "Val_int("
       | `Bool -> Format.pp_print_string ppf "Val_bool("
       end;
-
       gen_expression ppf expression;
       Format.pp_print_string ppf ")"
   | Cir.Type_val (conversion_type, expression) ->
@@ -140,14 +140,11 @@ and gen_expression ppf expression =
       | `Int -> Format.pp_print_string ppf "Int_val("
       | `Bool -> Format.pp_print_string ppf "Bool_val("
       end;
-
       gen_expression ppf expression;
       Format.pp_print_string ppf ")"
-  | Cir.Apply _ -> failwith "not implement apply yet"
   | Cir.Get_variable variable -> Format.fprintf ppf "v_%s" (var_name variable)
-  | Cir.Closure { name; arity; free_variables_count } ->
-      Format.fprintf ppf "caml_alloc_closure(%s, %d, %d)" name arity
-        free_variables_count
+  | Cir.Closure { name; arity; fvc } ->
+      Format.fprintf ppf "caml_alloc_closure(%s, %d, %d)" name arity fvc
   | Cir.Not expression ->
       Format.fprintf ppf "!(";
       gen_expression ppf expression;
@@ -188,13 +185,13 @@ and gen_expression ppf expression =
       Format.fprintf ppf "(-(";
       gen_expression ppf expression;
       Format.fprintf ppf "))"
+  | Cir.Raw_c raw -> Format.pp_print_string ppf raw
 
 and gen_constanta ppf constanta =
   match constanta with
   | Cir.Int x -> Format.fprintf ppf "Val_int(%dL)" x
   | Cir.Int64 x -> Format.fprintf ppf "caml_copy_int64(%LdLL)" x
   | Cir.Bool x -> Format.fprintf ppf "Val_bool(%b)" x
-  | Cir.Raw_c raw -> Format.pp_print_string ppf raw
   | Cir.Tuple { tag; constants } ->
       Format.fprintf ppf "caml_alloc(%d, %d, " tag (List.length constants);
       gen_args_list ppf gen_constanta constants;
