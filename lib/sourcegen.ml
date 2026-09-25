@@ -145,12 +145,15 @@ and gen_expression ppf expression =
 and gen_constanta ppf constanta =
   match constanta with
   | Cir.Int x -> Format.fprintf ppf "Val_int(%dL)" x
+  | Cir.Int64 x -> Format.fprintf ppf "caml_copy_int64(%LdLL)" x
   | Cir.Bool x -> Format.fprintf ppf "Val_bool(%b)" x
   | Cir.Raw_c raw -> Format.pp_print_string ppf raw
   | Cir.Tuple { tag; constants } ->
       Format.fprintf ppf "caml_alloc(%d, %d, " tag (List.length constants);
       gen_args_list ppf gen_constanta constants;
       Format.fprintf ppf ")"
+  | Cir.String s -> Format.fprintf ppf "s_%d" @@ String.hash s
+  | Cir.Float f -> Format.fprintf ppf "caml_copy_double(%h)" f
 
 let compile_into_formatter ppf (context, cir, string_interner) extra_c_files =
   let string_constants = Compiler.String_interner.to_iter string_interner in

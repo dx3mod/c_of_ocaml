@@ -50,6 +50,9 @@ and expression =
 and constanta =
   | Int of int
   | Bool of bool
+  | String of string
+  | Float of float
+  | Int64 of int64
   | Tuple of { tag : int; constants : constanta list }
   | Raw_c of string
 
