@@ -1,5 +1,5 @@
 (executables
- (names hello)
+ (names hello gc_stress tuple_test sudoku exceptions)
  (libraries c_of_ocaml.stdlib)
  (flags :standard -warn-error -5-27-32)
  (modes byte))
@@ -10,6 +10,34 @@
   (with-stdout-to
    %{targets}
    (run %{bin:c_of_ocaml} %{dep:hello.bc}))))
+
+(rule
+ (targets gc_stress.generated.c)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{bin:c_of_ocaml} %{dep:gc_stress.bc}))))
+
+(rule
+ (targets tuple_test.generated.c)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{bin:c_of_ocaml} %{dep:tuple_test.bc}))))
+
+(rule
+ (targets sudoku.generated.c)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{bin:c_of_ocaml} %{dep:sudoku.bc}))))
+
+(rule
+ (targets exceptions.generated.c)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{bin:c_of_ocaml} %{dep:exceptions.bc}))))
 
 (rule
  (target hello.generated.exe)

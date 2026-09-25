@@ -393,12 +393,64 @@ and compile_branch cir context stack_frame already_visited branch =
 
       compile_block cir context stack_frame already_visited then_label_address;
       compile_block cir context stack_frame already_visited else_label_address
-  | Code.Switch _ -> failwith "switch"
-  | Code.Pushtrap _ -> failwith "pushtrap"
-  | Code.Poptrap _ -> failwith "poptrap"
+  | Code.Switch (switch_variable, cases) ->
+      let cases_branches =
+        Array.to_list cases
+        |> List.mapi @@ fun i (label_address, arguments) ->
+           let cir = Cir_program.create () in
+
+           emits_assignments_of_passing_arguments cir context stack_frame
+             label_address arguments;
+           Cir_program.add cir @@ Goto label_address;
+
+           compile_block cir context stack_frame already_visited label_address;
+
+           (i, Cir_program.to_list cir)
+      in
+
+      let slot = Stack_frame.find_variable_slot stack_frame switch_variable in
+
+      Cir_program.add cir
+      @@ Cir.Switch (Get_stack_frame_variable slot, cases_branches)
+  | Pushtrap
+      ( (body_label_address, body_arguments),
+        exception_variable,
+        (handler_label_address, handler_arguments) ) ->
+      let cir_body = Cir_program.create () in
+      emits_assignments_of_passing_arguments cir_body context stack_frame
+        body_label_address body_arguments;
+      Cir_program.add cir_body (Goto body_label_address);
+
+      let cir_handler = Cir_program.create () in
+      Cir_program.add cir_handler
+      @@ compile_set_local_variable stack_frame exception_variable
+           Cir.(Constanta (Raw_c {|exn_value|}));
+      emits_assignments_of_passing_arguments cir_handler context stack_frame
+        handler_label_address handler_arguments;
+      Cir_program.add cir_handler (Goto handler_label_address);
+
+      Cir_program.add cir
+      @@ Cir.Push_trap
+           {
+             body = Cir_program.to_list cir_body;
+             handler = Cir_program.to_list cir_handler;
+           };
+
+      compile_block cir context stack_frame already_visited body_label_address;
+      compile_block cir context stack_frame already_visited
+        handler_label_address
+  | Poptrap (label_address, arguments) ->
+      Cir_program.add cir Pop_trap;
+      emits_assignments_of_passing_arguments cir context stack_frame
+        label_address arguments;
+      compile_block cir context stack_frame already_visited label_address
 
 (** Compiles a single IR instruction into CIR. *)
 and compile_instruction cir context stack_frame (instruction, _) =
+  let compile_access_to_local_variable =
+    compile_get_local_variable stack_frame
+  in
+
   match instruction with
   | Code.Let (variable, expression) ->
       let expression = compile_expression context stack_frame expression in
@@ -410,10 +462,20 @@ and compile_instruction cir context stack_frame (instruction, _) =
       in
 
       Cir_program.add cir instruction
-  | Code.Assign _ -> failwith ""
-  | Code.Set_field _ -> failwith ""
-  | Code.Offset_ref _ -> failwith ""
-  | Code.Array_set _ -> failwith ""
+  | Code.Assign _ -> failwith "assign"
+  | Code.Offset_ref _ -> failwith "offset_ref"
+  | Code.Set_field (block, index, x) ->
+      Cir_program.add cir
+      @@ Cir.Set_field
+           ( compile_access_to_local_variable block,
+             Constanta (Raw_c (string_of_int index)),
+             compile_access_to_local_variable x )
+  | Code.Array_set (array, index, x) ->
+      Cir_program.add cir
+      @@ Cir.Set_field
+           ( compile_access_to_local_variable array,
+             Type_val (`Int, compile_access_to_local_variable index),
+             compile_access_to_local_variable x )
 
 (** Translates a literal constant into its CIR equivalent. *)
 and compile_constant context constanta =
@@ -437,7 +499,14 @@ and compile_constant context constanta =
 and compile_expression context stack_frame expression =
   match expression with
   | Code.Constant constanta -> Constanta (compile_constant context constanta)
-  | Code.Field (variable, index) -> Cir.Field (variable, index)
+  | Code.Field (variable, index) ->
+      begin match Stack_frame.find_variable_slot_opt stack_frame variable with
+      | None -> Cir.Field (variable, index)
+      | Some slot ->
+          Cir.Field'
+            ( Get_stack_frame_variable slot,
+              Constanta (Raw_c (string_of_int index)) )
+      end
   | Code.Block (tag, fields, _, _) ->
       let fields =
         Array.to_list fields
@@ -471,20 +540,13 @@ and compile_expression context stack_frame expression =
 
 (** Compiles a primitive to CIR. *)
 and compile_primitive context stack_frame prim args =
-  let compile_argument = function
-    | Code.Pv variable ->
-        begin match Stack_frame.find_variable_slot_opt stack_frame variable with
-        | Some slot -> Cir.Get_stack_frame_variable slot
-        | None -> Cir.Get_variable variable
-        end
-    | Pc constant -> Cir.Constanta (compile_constant context constant)
-  in
+  let compile_argument = compile_argument context stack_frame in
 
   match (prim, args) with
   | Code.Vectlength, [ x ] -> Cir.Type_val (`Int, compile_argument x)
   | Array_get, [ array_variable; index ] ->
       let array_variable = compile_argument array_variable in
-      let array_index = compile_argument index in
+      let array_index = Cir.Type_val (`Int, compile_argument index) in
 
       Cir.Field' (array_variable, array_index)
   | Code.Extern "%undefined", _ -> Cir.Constanta (Raw_c "Val_unit")
@@ -494,12 +556,9 @@ and compile_primitive context stack_frame prim args =
       compile_integer_binary_operations name
         (compile_argument first_operand)
         (compile_argument second_operand)
-  | Code.Extern name, args when String.starts_with ~prefix:"%" name ->
-      failwith
-      @@ Format.sprintf "EXTERN %s with args %d" name (List.length args)
-  | Code.Extern name, _ ->
-      Cir.Call_extern
-        { function_name = name; arguments = List.map compile_argument args }
+  | Code.Extern name, _ when String.starts_with ~prefix:"%" name ->
+      compile_extern_builtins context stack_frame name args
+  | Code.Extern name, _ -> compile_extern context stack_frame name args
   | Not, [ arg ] ->
       Cir.Val_type (`Bool, Not (Type_val (`Bool, compile_argument arg)))
   | IsInt, [ arg ] -> Cir.Val_type (`Bool, Is_int (compile_argument arg))
@@ -526,7 +585,7 @@ and compile_primitive context stack_frame prim args =
         ( `Bool,
           Less_than_or_equal
             (compile_argument first_operand, compile_argument second_operand) )
-  | _ -> failwith "unhandled"
+  | _ -> Cir.Constanta (Raw_c "Val_unit")
 
 (** Translates binary integer arithmetic and bitwise primitives to CIR binary
     operations. *)
@@ -539,6 +598,67 @@ and compile_integer_binary_operations operation first_operand second_operand =
   and second = Cir.Type_val (`Int, second_operand) in
 
   Cir.Val_type (`Int, Binary_operation (integer_operation, first, second))
+
+(** Compiles built-in compiler primitives prefixed with [%] into equivalent CIR
+    expressions. *)
+and compile_extern_builtins context stack_frame name arguments =
+  match (name, arguments) with
+  | "%caml_format_int_special", [ arg ] ->
+      Cir.Call_extern
+        ( `Name "caml_format_int",
+          [ Constanta (Raw_c "%%d"); compile_argument context stack_frame arg ]
+        )
+  | "%direct_obj_tag", [ arg ] ->
+      Cir.Val_type
+        (`Int, Get_block (`Tag, compile_argument context stack_frame arg))
+  | "%int_neg", [ arg ] ->
+      Cir.Val_type
+        ( `Int,
+          Negative (Type_val (`Int, compile_argument context stack_frame arg))
+        )
+  | "%int_lsr", [ first_operand; second_operand ] ->
+      Cir.Val_type
+        ( `Int,
+          Binary_operation
+            ( ">>",
+              Type_val (`Int, compile_argument context stack_frame first_operand),
+              Type_val
+                (`Int, compile_argument context stack_frame second_operand) ) )
+  | _ -> failwith name
+
+(** Compiles external function calls or C runtime primitives into CIR
+    expressions. *)
+and compile_extern context stack_frame name arguments =
+  match (name, arguments) with
+  | "caml_array_unsafe_get", [ array; index ] ->
+      Cir.Field'
+        ( compile_argument context stack_frame array,
+          Type_val (`Int, compile_argument context stack_frame index) )
+  | _ ->
+      Cir.Call_extern
+        (`Name name, List.map (compile_argument context stack_frame) arguments)
+
+(** Compiles a primitive operand argument (variable or literal constant) into a
+    CIR expression. *)
+and compile_argument (context : Context.t) (stack_frame : Stack_frame.t)
+    argument =
+  match argument with
+  | Code.Pv variable ->
+      begin match Stack_frame.find_variable_slot_opt stack_frame variable with
+      | Some slot -> Cir.Get_stack_frame_variable slot
+      | None -> Cir.Get_variable variable
+      end
+  | Pc constant -> Cir.Constanta (compile_constant context constant)
+
+and compile_get_local_variable stack_frame variable =
+  match Stack_frame.find_variable_slot_opt stack_frame variable with
+  | Some slot -> Cir.Get_stack_frame_variable slot
+  | None -> Cir.Get_variable variable
+
+and compile_set_local_variable stack_frame variable expression =
+  match Stack_frame.find_variable_slot_opt stack_frame variable with
+  | None -> Cir.Set_variable (variable, expression)
+  | Some slot -> Cir.Set_stack_frame_variable (slot, expression)
 
 (** Compiles an entire [Code.program] into a compilation context, CIR program,
     and string interner. *)

@@ -26,6 +26,10 @@ type instruction =
   | Raise of expression
   | Goto of Code_addr.t
   | Condition of expression * body * body
+  | Switch of expression * (int * body) list
+  | Set_field of expression * expression * expression
+  | Push_trap of { body : body; handler : body }
+  | Pop_trap
 
 and expression =
   | Constanta of constanta
@@ -36,7 +40,8 @@ and expression =
   | Field' of expression * expression
   | Block of { tag : int; fields : expression list }
   | Call of { f : expression; args : expression list }
-  | Call_extern of { function_name : string; arguments : expression list }
+  | Call_extern of
+      [ `Name of string | `Expression of expression ] * expression list
   | Type_val of [ `Int | `Bool ] * expression
   | Val_type of [ `Int | `Bool ] * expression
   | Closure of { name : string; arity : int; free_variables_count : int }
@@ -46,6 +51,8 @@ and expression =
   | Less_than of expression * expression
   | Less_than_or_equal of expression * expression
   | Binary_operation of string * expression * expression
+  | Get_block of [ `Tag ] * expression
+  | Negative of expression
 
 and constanta =
   | Int of int

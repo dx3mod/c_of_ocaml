@@ -1,7 +1,15 @@
 open Containers
 module Code = Js_of_ocaml_compiler.Code
 
-let var_name var = Code.Var.get_name var |> Option.value ~default:"NO_VAR"
+let var_name var =
+  Code.Var.get_name var
+  |> Option.get_lazy (fun () ->
+      let buffer = Buffer.create 10 in
+      let ppf = Format.formatter_of_buffer buffer in
+      Code.Var.print ppf var;
+      Format.pp_print_flush ppf ();
+      Buffer.contents buffer)
+
 let string_name s = Printf.sprintf "s_%d" @@ String.hash s
 
 let gen_args_list ppf pp list =
@@ -35,7 +43,7 @@ let rec gen_instruction ppf instruction =
   | Function_declaration (name, count) ->
       Format.fprintf ppf "value %s(%s);" name
       @@ (List.init count Fun.(const "value") |> String.concat ", ")
-  | Label label_address -> Format.fprintf ppf "b%d:" label_address
+  | Label label_address -> Format.fprintf ppf "b%d: ;" label_address
   | Add_closure_argument (closure_expression, expression) ->
       Format.fprintf ppf "add_arg(";
       gen_expression ppf closure_expression;
@@ -50,7 +58,7 @@ let rec gen_instruction ppf instruction =
   | Raise expression ->
       Format.fprintf ppf "caml_raise(";
       gen_expression ppf expression;
-      Format.fprintf ppf ";"
+      Format.fprintf ppf ");"
   | Condition (cond, then_branch, else_branch) ->
       Format.fprintf ppf "if (";
       gen_expression ppf cond;
@@ -59,6 +67,33 @@ let rec gen_instruction ppf instruction =
       Format.fprintf ppf "} else {";
       List.iter (gen_instruction ppf) else_branch;
       Format.fprintf ppf "}"
+  | Set_field (array_expression, index_expression, expression) ->
+      Format.fprintf ppf "Field(";
+      gen_expression ppf array_expression;
+      Format.fprintf ppf ", ";
+      gen_expression ppf index_expression;
+      Format.fprintf ppf ") = ";
+      gen_expression ppf expression;
+      Format.fprintf ppf ";"
+  | Switch (expression, cases) ->
+      Format.fprintf ppf " switch (";
+      gen_expression ppf expression;
+      Format.fprintf ppf ") {";
+      List.iter
+        (fun (i, case) ->
+          Format.fprintf ppf "case %d: {" i;
+          List.iter (gen_instruction ppf) case;
+          Format.fprintf ppf "}")
+        cases;
+      Format.fprintf ppf "} "
+  | Push_trap { body; handler } ->
+      Format.fprintf ppf
+        {| check_trap_stack(); trap_sp->sp = sp; trap_sp->bp = bp; if (setjmp(trap_sp->buf) == 0) { trap_sp++;  |};
+      List.iter (gen_instruction ppf) body;
+      Format.fprintf ppf {| } else { |};
+      List.iter (gen_instruction ppf) handler;
+      Format.fprintf ppf {| } |}
+  | Pop_trap -> Format.fprintf ppf "trap_sp--;"
 
 and gen_expression ppf expression =
   match expression with
@@ -81,13 +116,17 @@ and gen_expression ppf expression =
   | Cir.Call { f; args } ->
       Format.fprintf ppf "caml_call(";
       gen_expression ppf f;
-      Format.fprintf ppf ", ";
-      gen_args_list ppf gen_expression args;
+      Format.fprintf ppf ", %d" (List.length args);
+      if not (List.is_empty args) then begin
+        Format.fprintf ppf ", ";
+        gen_args_list ppf gen_expression args
+      end;
       Format.fprintf ppf ")"
-  | Cir.Call_extern { function_name; arguments } ->
-      Format.fprintf ppf "%s(" function_name;
+  | Cir.Call_extern (`Name name, arguments) ->
+      Format.fprintf ppf "%s(" name;
       gen_args_list ppf gen_expression arguments;
       Format.fprintf ppf ")"
+  | Cir.Call_extern (_, _) -> failwith "unsupported call_extern"
   | Cir.Val_type (conversion_type, expression) ->
       begin match conversion_type with
       | `Int -> Format.pp_print_string ppf "Val_int("
@@ -141,6 +180,14 @@ and gen_expression ppf expression =
       Format.pp_print_string ppf operation;
       gen_expression ppf second_operand;
       Format.fprintf ppf ")"
+  | Cir.Get_block (`Tag, expression) ->
+      Format.fprintf ppf "Tag_val(";
+      gen_expression ppf expression;
+      Format.fprintf ppf ")"
+  | Cir.Negative expression ->
+      Format.fprintf ppf "(-(";
+      gen_expression ppf expression;
+      Format.fprintf ppf "))"
 
 and gen_constanta ppf constanta =
   match constanta with
