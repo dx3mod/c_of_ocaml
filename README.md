@@ -9,7 +9,7 @@ a'!   _,,_ a'!   _,,_     a'!   _,,_____
 
 A compiler from OCaml bytecode to standalone ANSI C with an embedded freestanding runtime.
 
-This is a research project, so don't expect a production-ready solution you'd actually want to use. Special thanks to Nathan Farlow for providing the foundation that got this project off the ground. This repository is a hard fork of his repo, featuring a heavily reworked compiler and efforts to shrink the runtime footprint for low-resource devices.
+This is a research project, so don't expect a production-ready solution you'd actually want to use. Special thanks to [Nathan Farlow] for providing the foundation that got this project off the ground. This repository is a hard fork of his repo, featuring a heavily reworked compiler and efforts to shrink the runtime footprint for low-resource devices.
 
 ## Quick start
 
@@ -22,7 +22,7 @@ $ dune build
 
 ### Hello world
 
-Here is a minimal example demonstrating how to compile an OCaml program into C and build a standalone executable using Dune.
+Here is a minimal example demonstrating how to compile an OCaml program into C and build a standalone executable using [Dune].
 
 First, set up a project directory (e.g., `demo/`) with the following structure:
 
@@ -69,6 +69,13 @@ $ ./_build/default/main.c.exe
 Soluton from C!
 ```
 
+### CLI
+
+C_of_ocaml comes with a few compilation options if you're curious.
+```console
+$ c_of_ocaml --help 
+```
+
 ## Internals
 
 This project uses [Js_of_ocaml] as a frontend to get and process bytecode, including applying a range of optimizations. Basically, the [pipeline](./lib/pipeline.ml) works like this:
@@ -83,3 +90,5 @@ This project uses [Js_of_ocaml] as a frontend to get and process bytecode, inclu
 Licensed under [LGPL-2.1](./LICENSE). Pull requests are welcome.
 
 [Js_of_ocaml]: https://ocsigen.org/js_of_ocaml/latest/js_of_ocaml/index.html
+[Nathan Farlow]: https://github.com/nathanfarlow/c-of-ocaml
+[Dune]: https://dune.build
