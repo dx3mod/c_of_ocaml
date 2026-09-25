@@ -12,6 +12,7 @@ type instruction =
   (* Block value instructions *)
   | Set_field of { var : expression; index : expression; value : expression }
   | Add_closure_argument of { var : expression; arg : expression }
+  | Offset_ref of { var : expression; n : int }
   (* Flow control instructions *)
   | Label of Code.Addr.t
   | Goto of Code.Addr.t

@@ -413,9 +413,11 @@ and compile_instruction cir context stack_frame instruction =
       @@ compile_expression context stack_frame expression
   | Code.Assign (var, var2) ->
       Cir_program.add cir
-      @@ Cir.Set_variable
+      @@ Set_variable
            { var; value = compile_get_local_variable stack_frame var2 }
-  | Code.Offset_ref _ -> failwith "offset_ref"
+  | Code.Offset_ref (var, n) ->
+      Cir_program.add cir
+      @@ Offset_ref { var = compile_get_local_variable stack_frame var; n }
   | Code.Set_field (var, index, _, value) ->
       Cir_program.add cir
       @@ Set_field

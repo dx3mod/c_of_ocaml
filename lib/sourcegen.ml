@@ -75,6 +75,11 @@ let rec gen_instruction ppf instruction =
       Format.fprintf ppf ") = ";
       gen_expression ppf value;
       Format.fprintf ppf ";"
+  | Cir.Offset_ref { var; n } ->
+      Format.fprintf ppf "Field(";
+      gen_expression ppf var;
+      Format.fprintf ppf ", 0";
+      Format.fprintf ppf ") += %d;" n
   | Cir.Switch { condition; case_branches } ->
       Format.fprintf ppf " switch (";
       gen_expression ppf condition;
