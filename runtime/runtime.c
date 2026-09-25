@@ -423,6 +423,13 @@ value caml_register_global(value a, value b, value c) {
   (void)c;
   return Val_unit;
 }
+
+value caml_register_global_predef(value a, value b) {
+  (void)a;
+  (void)b;
+  return Val_unit;
+}
+
 value caml_ensure_stack_capacity(value n) {
   (void)n;
   return Val_unit;

@@ -22,9 +22,13 @@
   "A compiler from OCaml bytecode to standalone ANSI C with an embedded freestanding runtime")
  (depends
   (ocaml
-   (= 5.2.0))
+   (= 5.5.1))
   dune
   (js_of_ocaml-compiler
-   (= 5.8.2)))
+   (= 6.4.1))
+  containers
+  containers-data
+  iter
+  ppx_deriving)
  (tags
   (compiler embedded)))

@@ -40,7 +40,7 @@ module Context = struct
     in
 
     Code.fold_closures program
-      (fun _ parameters continues acc ->
+      (fun _ parameters continues _ acc ->
         extract_closure parameters continues :: acc)
       []
     |> Hashtbl.of_list
@@ -64,10 +64,10 @@ module Context = struct
         Dynarray.append_list variables block.params;
         Dynarray.append_list variables
         @@ List.filter_map
-             (function Code.Let (variable, _), _ -> Some variable | _ -> None)
+             (function Code.Let (variable, _) -> Some variable | _ -> None)
              block.Code.body;
 
-        match fst block.branch with
+        match block.branch with
         | Pushtrap (_, exn_var, _) -> Dynarray.add_last variables exn_var
         | _ -> ()
       end
@@ -253,15 +253,14 @@ and compile_block cir context stack_frame already_visited label_address =
     in
 
     compile_block_body cir context stack_frame block.Code.body;
-    compile_branch cir context stack_frame already_visited
-      (fst block.Code.branch)
+    compile_branch cir context stack_frame already_visited block.Code.branch
   end
 
 (** Compiles the sequence of instructions in a basic block body. *)
 and compile_block_body cir context stack_frame body =
   let take_closures instructions =
     List.take_while
-      (function Code.Let (_, Code.Closure _), _ -> true | _ -> false)
+      (function Code.Let (_, Code.Closure _) -> true | _ -> false)
       instructions
   in
 
@@ -292,7 +291,7 @@ and compile_block_body cir context stack_frame body =
 and compile_closure_allocation cir context stack_frame closure_instructions =
   List.iter
     begin function
-      | Code.Let (variable, Code.Closure (params, (label_address, _))), _ ->
+      | Code.Let (variable, Code.Closure (params, (label_address, _), _)) ->
           let closure_info =
             Hashtbl.find context.Context.closures label_address
           in
@@ -315,7 +314,7 @@ and compile_closure_allocation cir context stack_frame closure_instructions =
 
   List.iter
     begin function
-      | Code.Let (variable, Code.Closure (_, (label_address, _))), _ ->
+      | Code.Let (variable, Code.Closure (_, (label_address, _), _)) ->
           let closure_info =
             Hashtbl.find context.Context.closures label_address
           in
@@ -446,7 +445,7 @@ and compile_branch cir context stack_frame already_visited branch =
       compile_block cir context stack_frame already_visited label_address
 
 (** Compiles a single IR instruction into CIR. *)
-and compile_instruction cir context stack_frame (instruction, _) =
+and compile_instruction cir context stack_frame instruction =
   let compile_access_to_local_variable =
     compile_get_local_variable stack_frame
   in
@@ -464,7 +463,7 @@ and compile_instruction cir context stack_frame (instruction, _) =
       Cir_program.add cir instruction
   | Code.Assign _ -> failwith "assign"
   | Code.Offset_ref _ -> failwith "offset_ref"
-  | Code.Set_field (block, index, x) ->
+  | Code.Set_field (block, index, _, x) ->
       Cir_program.add cir
       @@ Cir.Set_field
            ( compile_access_to_local_variable block,
@@ -476,15 +475,19 @@ and compile_instruction cir context stack_frame (instruction, _) =
            ( compile_access_to_local_variable array,
              Type_val (`Int, compile_access_to_local_variable index),
              compile_access_to_local_variable x )
+  | Code.Event _ -> failwith "unsupported event"
 
 (** Translates a literal constant into its CIR equivalent. *)
 and compile_constant context constanta =
-  match constanta with
-  | Code.Int x -> Cir.Int (Int32.to_int x)
+  match (constanta : Code.constant) with
+  | NativeInt x | Int32 x -> Cir.Int (Int32.to_int x)
+  | Int target_int ->
+      Cir.Int (Js_of_ocaml_compiler.Targetint.to_int_exn target_int)
   | String s | NativeString (Byte s | Utf (Utf8 s)) ->
       String_interner.insert context.Context.string_interner s;
       Cir.String s
-  | Float float -> Cir.Float float
+  | Float32 _ | Float _ -> Cir.Float 0.1
+  | Null_ -> failwith ""
   | Int64 x -> Cir.Int64 x
   | Tuple (tag, constants, _) ->
       Cir.Tuple
@@ -499,7 +502,7 @@ and compile_constant context constanta =
 and compile_expression context stack_frame expression =
   match expression with
   | Code.Constant constanta -> Constanta (compile_constant context constanta)
-  | Code.Field (variable, index) ->
+  | Code.Field (variable, index, _) ->
       begin match Stack_frame.find_variable_slot_opt stack_frame variable with
       | None -> Cir.Field (variable, index)
       | Some slot ->
@@ -534,7 +537,6 @@ and compile_expression context stack_frame expression =
       in
 
       Cir.Call { f; args }
-  | Special Undefined -> Constanta (Cir.Raw_c "Val_unit")
   | Special (Alias_prim _) -> Constanta (Cir.Raw_c "Val_unit")
   | Prim (prim, args) -> compile_primitive context stack_frame prim args
 

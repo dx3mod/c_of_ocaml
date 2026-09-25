@@ -1,10 +1,18 @@
 open Containers
 
+let initialize_configuration () =
+  Js_of_ocaml_compiler.Config.set_target `JavaScript;
+  Js_of_ocaml_compiler.Config.set_effects_backend `Disabled;
+
+  Js_of_ocaml_compiler.Targetint.set_num_bits 32
+
 let read_bytecode_from_channel ic =
   Js_of_ocaml_compiler.Parse_bytecode.from_exe ~linkall:false ~link_info:false
     ~include_cmis:false ic
 
 let run ~disable_optimization ~dump_cir ?output_file ~extra_c_files ic =
+  initialize_configuration ();
+
   let program = (read_bytecode_from_channel ic).code in
   let optimized_program =
     if disable_optimization then program

@@ -5,6 +5,11 @@ let input_file =
   Arg.(required & pos 0 (some file) None & info [] ~docv:"INPUT_FILE" ~doc)
 
 let run input_file =
+  Js_of_ocaml_compiler.Config.set_target `JavaScript;
+  Js_of_ocaml_compiler.Config.set_effects_backend `Disabled;
+
+  Js_of_ocaml_compiler.Targetint.set_num_bits 32;
+
   let bytecode =
     In_channel.with_open_bin input_file @@ fun ic ->
     Js_of_ocaml_compiler.Parse_bytecode.from_exe ~linkall:false ~link_info:false
@@ -18,7 +23,8 @@ let run input_file =
     | Js_of_ocaml_compiler.Code.Print.Last last ->
         Format.asprintf "%a" Js_of_ocaml_compiler.Code.Print.last last
   in
-  Js_of_ocaml_compiler.Code.Print.program xinstr_to_string bytecode.code
+  Js_of_ocaml_compiler.Code.Print.program Format.std_formatter xinstr_to_string
+    bytecode.code
 
 let cmd =
   let doc = "Dump Ocaml bytecode from *.bc file." in

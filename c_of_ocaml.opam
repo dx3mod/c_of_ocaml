@@ -10,9 +10,13 @@ tags: ["compiler" "embedded"]
 homepage: "https://github.com/nathanfarlow/c-of-ocaml"
 bug-reports: "https://github.com/nathanfarlow/c-of-ocaml/issues"
 depends: [
-  "ocaml" {= "5.2.0"}
+  "ocaml" {= "5.5.1"}
   "dune" {>= "3.14"}
-  "js_of_ocaml-compiler" {= "5.8.2"}
+  "js_of_ocaml-compiler" {= "6.4.1"}
+  "containers"
+  "containers-data"
+  "iter"
+  "ppx_deriving"
   "odoc" {with-doc}
 ]
 build: [

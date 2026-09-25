@@ -6,3 +6,5 @@ _build/
 .vscode/
 # Demos
 demo*
+# Local switches
+_opam
