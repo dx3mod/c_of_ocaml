@@ -1,11 +1,13 @@
+let () = Io.puts "Hello World"
+
 (* let f n =
   let rec loop i a b = if i = n then a else loop (i + 1) b (a + b) in
   loop 0 0 1
 ;; *)
 
-external putc : char -> unit = "caml_putc"
+(* external putc : char -> unit = "caml_putc"
 
-let () = putc 'Y'
+let () = putc 'Y' *)
 
 (* external f : string -> unit = "fups"
 

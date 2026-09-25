@@ -129,6 +129,23 @@ module Cir_program = struct
   let pp ppf instars = Dynarray.iter (Cir.pp_instruction ppf) instars
 end
 
+let integer_binary_operations =
+  [
+    ("%int_add", "+");
+    ("%int_sub", "-");
+    ("%int_mul", "*");
+    ("%int_div", "/");
+    ("%int_mod", "%");
+    ("%direct_int_mul", "*");
+    ("%direct_int_div", "/");
+    ("%direct_int_mod", "%");
+    ("%int_and", "&");
+    ("%int_or", "|");
+    ("%int_xor", "^");
+    ("%int_lsl", "<<");
+    ("%int_asr", ">>");
+  ]
+
 let rec compile_closure cir context label_address closure_info =
   let stack_frame = Stack_frame.create () in
 
@@ -336,7 +353,34 @@ and compile_branch cir context stack_frame already_visited branch =
 
       Cir_program.add cir @@ Cir.Goto target_label_address;
       compile_block cir context stack_frame already_visited target_label_address
-  | Code.Cond _ -> failwith "cond"
+  | Cond
+      ( cond_variable,
+        (then_label_address, then_branch_arguments),
+        (else_label_address, else_branch_arguments) ) ->
+      let cond_expression =
+        match Stack_frame.find_variable_slot_opt stack_frame cond_variable with
+        | Some slot -> Cir.Get_stack_frame_variable slot
+        | None -> Cir.Get_variable cond_variable
+      in
+
+      let cir_then_arguments = Cir_program.create () in
+      compile_environment_assigns cir_then_arguments context stack_frame
+        then_label_address then_branch_arguments;
+
+      let cir_else_arguments = Cir_program.create () in
+      compile_environment_assigns cir_else_arguments context stack_frame
+        else_label_address else_branch_arguments;
+
+      Cir_program.add cir
+      @@ Condition
+           ( Type_val (`Bool, cond_expression),
+             Cir_program.to_list cir_then_arguments
+             @ [ Goto then_label_address ],
+             Cir_program.to_list cir_else_arguments
+             @ [ Goto else_label_address ] );
+
+      compile_block cir context stack_frame already_visited then_label_address;
+      compile_block cir context stack_frame already_visited else_label_address
   | Code.Switch _ -> failwith "switch"
   | Code.Pushtrap _ -> failwith "pushtrap"
   | Code.Poptrap _ -> failwith "poptrap"
@@ -421,12 +465,57 @@ and compile_prim context stack_frame prim args =
   in
 
   match (prim, args) with
-  | Code.Vectlength, [ x ] -> Cir.To_int (compile_arg x)
+  | Code.Vectlength, [ x ] -> Cir.Type_val (`Int, compile_arg x)
+  | Array_get, [ array_variable; index ] ->
+      let array_variable = compile_arg array_variable in
+      let array_index = compile_arg index in
+
+      Cir.Field' (array_variable, array_index)
   | Code.Extern "%undefined", _ -> Cir.Constanta (Raw_c "Val_unit")
+  | Code.Extern name, [ first_operand; second_operand ]
+    when String.starts_with ~prefix:"%" name
+         && List.mem_assoc name integer_binary_operations ->
+      compile_integer_binary_operations name
+        (compile_arg first_operand)
+        (compile_arg second_operand)
+  | Code.Extern name, args when String.starts_with ~prefix:"%" name ->
+      failwith
+      @@ Format.sprintf "EXTERN %s with args %d" name (List.length args)
   | Code.Extern name, _ ->
       Cir.Call_extern
         { function_name = name; arguments = List.map compile_arg args }
-  | _ -> Cir.Constanta (Raw_c "LOX")
+  | Not, [ arg ] -> Cir.Val_type (`Bool, Not (Type_val (`Bool, compile_arg arg)))
+  | IsInt, [ arg ] -> Cir.Val_type (`Bool, Is_int (compile_arg arg))
+  | Eq, [ first_operand; second_operand ] ->
+      Cir.Val_type
+        ( `Bool,
+          Equal
+            ( Type_val (`Int, compile_arg first_operand),
+              Type_val (`Int, compile_arg second_operand) ) )
+  | Neq, [ first_operand; second_operand ] ->
+      Cir.Val_type
+        ( `Bool,
+          Not (Equal (compile_arg first_operand, compile_arg second_operand)) )
+  | Lt, [ first_operand; second_operand ] ->
+      Cir.Val_type
+        ( `Bool,
+          Less_than (compile_arg first_operand, compile_arg second_operand) )
+  | Le, [ first_operand; second_operand ] ->
+      Cir.Val_type
+        ( `Bool,
+          Less_than_or_equal
+            (compile_arg first_operand, compile_arg second_operand) )
+  | _ -> failwith "unhandled"
+
+and compile_integer_binary_operations operation first_operand second_operand =
+  let integer_operation =
+    List.assoc ~eq:String.equal operation integer_binary_operations
+  in
+
+  let first = Cir.Type_val (`Int, first_operand)
+  and second = Cir.Type_val (`Int, second_operand) in
+
+  Cir.Val_type (`Int, Binary_operation (integer_operation, first, second))
 
 let compile_program program =
   let context = Context.make program in

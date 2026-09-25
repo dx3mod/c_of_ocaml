@@ -25,6 +25,7 @@ type instruction =
   | Return of expression
   | Raise of expression
   | Goto of Code_addr.t
+  | Condition of expression * body * body
 
 and expression =
   | Constanta of constanta
@@ -32,15 +33,25 @@ and expression =
   | Get_stack_frame_variable of slot
   | Get_variable of Code_var.t
   | Field of Code_var.t * int
+  | Field' of expression * expression
   | Block of { tag : int; fields : expression list }
   | Call of { f : expression; args : expression list }
   | Call_extern of { function_name : string; arguments : expression list }
-  | To_int of expression
+  | Type_val of [ `Int | `Bool ] * expression
+  | Val_type of [ `Int | `Bool ] * expression
   | Closure of { name : string; arity : int; free_variables_count : int }
+  | Not of expression
+  | Is_int of expression
+  | Equal of expression * expression
+  | Less_than of expression * expression
+  | Less_than_or_equal of expression * expression
+  | Binary_operation of string * expression * expression
 
 and constanta =
   | Int of int
+  | Bool of bool
   | Tuple of { tag : int; constants : constanta list }
   | Raw_c of string
 
+and body = instruction list
 and slot = int [@@deriving show]

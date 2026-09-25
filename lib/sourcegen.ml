@@ -51,6 +51,14 @@ let rec gen_instruction ppf instruction =
       Format.fprintf ppf "caml_raise(";
       gen_expression ppf expression;
       Format.fprintf ppf ";"
+  | Condition (cond, then_branch, else_branch) ->
+      Format.fprintf ppf "if (";
+      gen_expression ppf cond;
+      Format.fprintf ppf ") {";
+      List.iter (gen_instruction ppf) then_branch;
+      Format.fprintf ppf "} else {";
+      List.iter (gen_instruction ppf) else_branch;
+      Format.fprintf ppf "}"
 
 and gen_expression ppf expression =
   match expression with
@@ -58,6 +66,12 @@ and gen_expression ppf expression =
   | Cir.Get_stack_frame_variable slot -> Format.fprintf ppf "bp[%d]" slot
   | Cir.Field (variable, index) ->
       Format.fprintf ppf "Field(v_%s, %d)" (var_name variable) index
+  | Cir.Field' (variable, index) ->
+      Format.fprintf ppf "Field(";
+      gen_expression ppf variable;
+      Format.fprintf ppf ", ";
+      gen_expression ppf index;
+      Format.fprintf ppf ")"
   | Cir.Block { tag; fields } ->
       Format.fprintf ppf "caml_alloc(%d, %d, " tag (List.length fields);
       (match fields with
@@ -74,8 +88,20 @@ and gen_expression ppf expression =
       Format.fprintf ppf "%s(" function_name;
       gen_args_list ppf gen_expression arguments;
       Format.fprintf ppf ")"
-  | Cir.To_int expression ->
-      Format.pp_print_string ppf "Int_val(";
+  | Cir.Val_type (conversion_type, expression) ->
+      begin match conversion_type with
+      | `Int -> Format.pp_print_string ppf "Val_int("
+      | `Bool -> Format.pp_print_string ppf "Val_bool("
+      end;
+
+      gen_expression ppf expression;
+      Format.pp_print_string ppf ")"
+  | Cir.Type_val (conversion_type, expression) ->
+      begin match conversion_type with
+      | `Int -> Format.pp_print_string ppf "Int_val("
+      | `Bool -> Format.pp_print_string ppf "Bool_val("
+      end;
+
       gen_expression ppf expression;
       Format.pp_print_string ppf ")"
   | Cir.Apply _ -> failwith "not implement apply yet"
@@ -83,10 +109,43 @@ and gen_expression ppf expression =
   | Cir.Closure { name; arity; free_variables_count } ->
       Format.fprintf ppf "caml_alloc_closure(%s, %d, %d)" name arity
         free_variables_count
+  | Cir.Not expression ->
+      Format.fprintf ppf "!(";
+      gen_expression ppf expression;
+      Format.fprintf ppf ")"
+  | Cir.Equal (first_operand, second_operand) ->
+      Format.fprintf ppf "(";
+      gen_expression ppf first_operand;
+      Format.fprintf ppf "==";
+      gen_expression ppf second_operand;
+      Format.fprintf ppf ")"
+  | Cir.Less_than (first_operand, second_operand) ->
+      Format.fprintf ppf "(";
+      gen_expression ppf first_operand;
+      Format.fprintf ppf "<";
+      gen_expression ppf second_operand;
+      Format.fprintf ppf ")"
+  | Cir.Less_than_or_equal (first_operand, second_operand) ->
+      Format.fprintf ppf "(";
+      gen_expression ppf first_operand;
+      Format.fprintf ppf "<=";
+      gen_expression ppf second_operand;
+      Format.fprintf ppf ")"
+  | Cir.Is_int expression ->
+      Format.fprintf ppf "Is_int(";
+      gen_expression ppf expression;
+      Format.fprintf ppf ")"
+  | Cir.Binary_operation (operation, first_operand, second_operand) ->
+      Format.fprintf ppf "(";
+      gen_expression ppf first_operand;
+      Format.pp_print_string ppf operation;
+      gen_expression ppf second_operand;
+      Format.fprintf ppf ")"
 
 and gen_constanta ppf constanta =
   match constanta with
   | Cir.Int x -> Format.fprintf ppf "Val_int(%dL)" x
+  | Cir.Bool x -> Format.fprintf ppf "Val_bool(%b)" x
   | Cir.Raw_c raw -> Format.pp_print_string ppf raw
   | Cir.Tuple { tag; constants } ->
       Format.fprintf ppf "caml_alloc(%d, %d, " tag (List.length constants);

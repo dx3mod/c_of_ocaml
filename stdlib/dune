@@ -1,6 +1,7 @@
 (library
  (name stdlib)
- (flags :standard -nostdlib -nopervasives)
+ (public_name c_of_ocaml.stdlib)
+ (modes byte)
  (stdlib
   (exit_module std_exit))
  (foreign_stubs

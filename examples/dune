@@ -1,6 +1,6 @@
 (executables
  (names hello)
- (libraries stdlib)
+ (libraries c_of_ocaml.stdlib)
  (flags :standard -warn-error -5-27-32)
  (modes byte))
 
